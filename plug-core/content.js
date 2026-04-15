@@ -1267,9 +1267,51 @@
       var total = r.cxai_batch_total || (queue.length + 1);
       var current = total - queue.length;
 
-      // 显示确认提示，不自动执行
       var bar = panelEl.querySelector('#cxai-batch-bar');
       if (!bar) return;
+
+      // 讨论页自动继续，不需要用户手动确认
+      if (isDiscussPage) {
+        bar.style.display = 'block';
+        bar.innerHTML =
+          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
+          + '<span style="font-size:12px;font-weight:600;color:#2b7de9;">📋 批量执行中</span>'
+          + '<span id="cxai-batch-count" style="font-size:12px;color:#555;"></span>'
+          + '</div>'
+          + '<div style="height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">'
+          + '<div id="cxai-batch-progress" style="height:100%;background:linear-gradient(90deg,#4f8ff7,#6c63ff);border-radius:3px;transition:width .4s;width:0%;"></div>'
+          + '</div>';
+        showBatchProgress(current, total, queue.length);
+        log('BATCH: 讨论页自动继续 (第 ' + current + '/' + total + ')...', 'info');
+
+        setTimeout(async function () {
+          await executeCurrentTaskForBatch();
+
+          if (aborted) {
+            log('BATCH: 已中止，批量停止', 'warn');
+            return;
+          }
+
+          if (queue.length > 0) {
+            var nextUrl = queue.shift();
+            showBatchProgress(current + 1, total, queue.length);
+            log('BATCH: 导航到下一个任务...', 'info');
+            chrome.runtime.sendMessage({
+              type: 'NAVIGATE_TASK',
+              url: nextUrl,
+              queue: queue,
+            });
+          } else {
+            chrome.storage.local.set({ cxai_batch_auto: false, cxai_batch_queue: [], cxai_batch_total: 0 });
+            bar.querySelector('#cxai-batch-count').textContent = '全部完成!';
+            bar.querySelector('#cxai-batch-progress').style.width = '100%';
+            log('BATCH: 全部 ' + total + ' 个任务执行完成!', 'success');
+          }
+        }, 3000);
+        return;
+      }
+
+      // 非讨论页：显示确认提示
       bar.style.display = 'block';
       bar.innerHTML =
         '<div style="margin-bottom:8px;">'
@@ -1282,12 +1324,6 @@
         + '</div>';
 
       log('BATCH: 检测到未完成批量 (第 ' + current + '/' + total + ')，等待确认...', 'info');
-
-      // 讨论页自动继续，不需要用户手动确认
-      if (isDiscussPage) {
-        bar.querySelector('#cxai-batch-resume').click();
-        return;
-      }
 
       // 继续按钮
       bar.querySelector('#cxai-batch-resume').addEventListener('click', function () {
