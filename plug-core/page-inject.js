@@ -1,5 +1,18 @@
 // 运行在页面主世界 (MAIN world)，可直接访问 Vue 实例
+// 注意：不能访问 content script 隔离 world 的 window.CXAI_CONST，超时常量本地定义
 (function () {
+  'use strict';
+
+  var T = {
+    CHAT_RESPONSE: 90000,   // 等待 AI 老师回复
+    CHAT_POLL: 400,         // 回复轮询间隔
+    CHAT_FIRST_LOAD: 5000,  // 首次 loading 开始的最大等待
+    EVALUATE: 180000,       // 评估总超时
+    EVAL_POLL: 2000,        // 评估轮询间隔
+    UPLOAD: 120000,         // 文件上传超时
+    UPLOAD_POLL: 2000,      // 上传轮询间隔
+  };
+
   function getApp() {
     var el = document.getElementById('app');
     return el && el.__vue__;
@@ -59,11 +72,11 @@
       app.sendMessage();
 
       var waited = 0;
-      var maxWait = 90000;
-      var poll = 400;
+      var maxWait = T.CHAT_RESPONSE;
+      var poll = T.CHAT_POLL;
 
       function waitSend() {
-        if (waited < 5000 && !app.current.isLoadingChat) {
+        if (waited < T.CHAT_FIRST_LOAD && !app.current.isLoadingChat) {
           waited += poll;
           return setTimeout(waitSend, poll);
         }
@@ -71,7 +84,7 @@
       }
 
       function waitResponse() {
-        if (waited >= maxWait) return fail('等待AI老师回复超时(90s)');
+        if (waited >= maxWait) return fail('等待AI老师回复超时(' + Math.round(maxWait / 1000) + 's)');
         if (app.current.isLoadingChat) {
           waited += poll;
           return setTimeout(waitResponse, poll);
@@ -174,12 +187,12 @@
       app.startEvaluate();
 
       var evalWaited = 0;
-      var evalMax = 180000;
-      var evalPoll = 2000;
+      var evalMax = T.EVALUATE;
+      var evalPoll = T.EVAL_POLL;
 
       function checkEval() {
         evalWaited += evalPoll;
-        if (evalWaited > evalMax) return fail('评估超时(180s)');
+        if (evalWaited > evalMax) return fail('评估超时(' + Math.round(evalMax / 1000) + 's)');
         var s = app.current.evaluateStatus;
         console.log('[ChaoxingAI] evaluateStatus:', s, '(' + typeof s + ') waited:', evalWaited + 'ms');
         if (s == 2) {
@@ -238,12 +251,12 @@
 
         // 等待上传完成 + 文件解析
         var uploadWaited = 0;
-        var uploadMax = 120000;
-        var uploadPoll = 2000;
+        var uploadMax = T.UPLOAD;
+        var uploadPoll = T.UPLOAD_POLL;
 
         function checkUpload() {
           uploadWaited += uploadPoll;
-          if (uploadWaited > uploadMax) return fail('文件上传/解析超时(120s)');
+          if (uploadWaited > uploadMax) return fail('文件上传/解析超时(' + Math.round(uploadMax / 1000) + 's)');
 
           // 检查是否还在上传
           if (app.isUploading) {
@@ -295,11 +308,12 @@
 
       // 方法1: 尝试 Vue 实例上的方法
       var retryMethods = ['againAnswer', 'retryAnswer', 'againPractice', 'restartAnswer', 'reAnswer', 'reloadAnswer', 'newAnswer', 'handleAgain', 'handleRetry', 'handleRestart', 'onAgain', 'onRetry', 'doRetry', 'doAgain', 'goRetry', 'goPractice'];
-      for (var mi = 0; mi < retryMethods.length; mi++) {
-        if (typeof app[retryMethods[mi]] === 'function') {
-          console.log('[ChaoxingAI] retryTask: 调用 app.' + retryMethods[mi] + '()');
-          reply({ success: true, method: retryMethods[mi] });
-          setTimeout(function () { app[retryMethods[mi]](); }, 100);
+      for (let mi = 0; mi < retryMethods.length; mi++) {
+        const methodName = retryMethods[mi];
+        if (typeof app[methodName] === 'function') {
+          console.log('[ChaoxingAI] retryTask: 调用 app.' + methodName + '()');
+          reply({ success: true, method: methodName });
+          setTimeout(function () { app[methodName](); }, 100);
           return;
         }
       }

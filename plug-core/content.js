@@ -1,6 +1,26 @@
 (function () {
   'use strict';
 
+  // ==================== 共享常量（有 fallback 保底） ====================
+  var _CONST = window.CXAI_CONST || {};
+  var K = _CONST.STORAGE_KEYS || {
+    CONFIG: 'cxai_config', PROFILES: 'cxai_profiles', ACTIVE_PROFILE: 'cxai_active_profile',
+    HISTORY: 'cxai_history', RETRY_STATE: 'cxai_retry_state',
+    BATCH_QUEUE: 'cxai_batch_queue', BATCH_AUTO: 'cxai_batch_auto',
+    BATCH_TOTAL: 'cxai_batch_total', BATCH_TASKS: 'cxai_batch_tasks',
+    BATCH_FAILED: 'cxai_batch_failed', SCAN_CACHE: 'cxai_scan_cache', STATS: 'cxai_stats'
+  };
+  var T = _CONST.TIMEOUTS || {
+    PAGE_CALL: 120000, DEEPSEEK_DEFAULT_MAX_TOKENS: 1200, DEEPSEEK_DOC_MAX_TOKENS: 4000,
+    RETRY_DELAY: 3000, EMPTY_REPLY_RETRY: 3000, SUBMIT_WAIT: 3000, RUN_RETRY_AUTO_DELAY: 4000,
+    FILE_PARSE: 60000
+  };
+  var L = _CONST.LIMITS || { MAX_HISTORY: 50, MAX_RETRY_ATTEMPTS: 10, SCAN_CACHE_TTL: 3600000 };
+  var PRICING = _CONST.PRICING || {
+    'deepseek-chat':     { input: 2.0, output: 8.0 },
+    'deepseek-reasoner': { input: 4.0, output: 16.0 }
+  };
+
   // ==================== 配置 ====================
   const DEFAULT_CONFIG = {
     apiKey: '',
@@ -10,7 +30,15 @@
     delay: 3,
     customPrompt: '',
     promptStyle: 'balanced',
-    targetScore: 0
+    targetScore: 0,
+    discussLength: 'medium',   // 讨论字数: short(120-200) / medium(200-400) / long(400-600)
+  };
+
+  // 讨论字数档位
+  const DISCUSS_LENGTHS = {
+    short:  { range: '120-200', label: '短 (120-200字)' },
+    medium: { range: '200-400', label: '中 (200-400字)' },
+    long:   { range: '400-600', label: '长 (400-600字)' },
   };
 
   const PROMPT_STYLES = {
@@ -29,8 +57,12 @@
 
   let config = { ...DEFAULT_CONFIG };
   let isRunning = false;
+  let isPaused = false;
   let aborted = false;
   let lastFeedback = null;
+  let activeProfile = 'default';   // 当前 profile 名
+  let profiles = {};                // { name: config }
+  let sessionUsage = { input: 0, output: 0, cost: 0, calls: 0 }; // 本次会话累计
 
   // DOM 引用
   let panelEl, logEl, statusEl, progressBarEl, startBtn, stopBtn, continueBtn, taskInfoEl;
@@ -80,7 +112,7 @@
     return msg;
   }
 
-  // ==================== 日志 ====================
+  // ==================== 日志 + Toast ====================
 
   function log(msg, type = '') {
     console.log('[ChaoxingAI]', msg);
@@ -97,7 +129,36 @@
     line.appendChild(ts);
     line.appendChild(tx);
     logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
+    // 平滑滚动到底
+    logEl.scrollTo({ top: logEl.scrollHeight, behavior: 'smooth' });
+  }
+
+  // Toast 通知 — 重要事件的视觉反馈
+  var _toastContainer = null;
+  function toast(msg, type) {
+    type = type || 'info';
+    if (!_toastContainer) {
+      _toastContainer = document.createElement('div');
+      _toastContainer.id = 'cxai-toast-container';
+      document.body.appendChild(_toastContainer);
+    }
+    var icons = { success: '✓', error: '✕', warn: '⚠', info: 'ℹ' };
+    var el = document.createElement('div');
+    el.className = 'cxai-toast cxai-toast-' + type;
+    var icon = document.createElement('span');
+    icon.className = 'cxai-toast-icon';
+    icon.textContent = icons[type] || icons.info;
+    var txt = document.createElement('span');
+    txt.className = 'cxai-toast-text';
+    txt.textContent = msg;
+    el.appendChild(icon);
+    el.appendChild(txt);
+    _toastContainer.appendChild(el);
+    // 3.5秒后淡出
+    setTimeout(function () {
+      el.classList.add('cxai-toast-out');
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 250);
+    }, type === 'error' ? 5000 : 3500);
   }
 
   let liveDotEl, scoreEl;
@@ -144,9 +205,9 @@
       setTimeout(() => {
         if (_pageCallbacks[id]) {
           delete _pageCallbacks[id];
-          reject(new Error('pageCall("' + action + '") 超时(120s)'));
+          reject(new Error('pageCall("' + action + '") 超时(' + Math.round(T.PAGE_CALL / 1000) + 's)'));
         }
-      }, 120000);
+      }, T.PAGE_CALL);
     });
   }
 
@@ -155,7 +216,7 @@
   function bgMessage(msg) {
     return new Promise(function (resolve, reject) {
       chrome.runtime.sendMessage(msg, function (resp) {
-        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+        if (chrome.runtime.lastError) return reject(new Error(normalizeRuntimeError(chrome.runtime.lastError)));
         if (!resp) return reject(new Error('无响应'));
         if (resp.success) resolve(resp.data);
         else reject(new Error(resp.error || '未知错误'));
@@ -163,15 +224,69 @@
     });
   }
 
+  // bgChat: 发送 DeepSeek 请求，自动累计 token/费用
+  function bgChat(payload) {
+    return new Promise(function (resolve, reject) {
+      chrome.runtime.sendMessage(Object.assign({ type: 'DEEPSEEK_CHAT' }, payload), function (resp) {
+        if (chrome.runtime.lastError) return reject(new Error(normalizeRuntimeError(chrome.runtime.lastError)));
+        if (!resp) return reject(new Error('无响应'));
+        if (!resp.success) return reject(new Error(resp.error || '未知错误'));
+        if (resp.usage) recordUsage(payload.model || config.model, resp.usage);
+        resolve(resp.data);
+      });
+    });
+  }
+
+  // ==================== Token 统计 ====================
+  function recordUsage(model, usage) {
+    var inputT = usage.prompt_tokens || 0;
+    var outputT = usage.completion_tokens || 0;
+    var p = PRICING[model] || PRICING['deepseek-chat'];
+    var cost = (inputT / 1e6) * p.input + (outputT / 1e6) * p.output;
+
+    sessionUsage.input += inputT;
+    sessionUsage.output += outputT;
+    sessionUsage.cost += cost;
+    sessionUsage.calls += 1;
+    updateUsageUI();
+
+    // 累计到 storage
+    chrome.storage.local.get([K.STATS], function (r) {
+      var s = r[K.STATS] || { input: 0, output: 0, cost: 0, calls: 0 };
+      s.input += inputT;
+      s.output += outputT;
+      s.cost += cost;
+      s.calls += 1;
+      var o = {}; o[K.STATS] = s;
+      chrome.storage.local.set(o);
+    });
+  }
+
+  function updateUsageUI() {
+    if (!panelEl) return;
+    var el = panelEl.querySelector('#cxai-usage-info');
+    if (!el) return;
+    el.innerHTML = '<span>📊 本次: ' + sessionUsage.calls + ' 次调用</span>'
+      + ' · <span>' + formatTokens(sessionUsage.input + sessionUsage.output) + ' tokens</span>'
+      + ' · <span style="color:#4f8ff7;font-weight:600;">¥' + sessionUsage.cost.toFixed(4) + '</span>';
+  }
+
+  function formatTokens(n) {
+    if (n < 1000) return n + '';
+    if (n < 1e6) return (n / 1000).toFixed(1) + 'K';
+    return (n / 1e6).toFixed(2) + 'M';
+  }
+
   // ==================== 执行历史 ====================
 
   function saveHistory(record) {
     record.time = new Date().toLocaleString('zh-CN', { hour12: false });
-    chrome.storage.local.get(['cxai_history'], function (r) {
-      var list = r.cxai_history || [];
+    chrome.storage.local.get([K.HISTORY], function (r) {
+      var list = r[K.HISTORY] || [];
       list.unshift(record);
-      if (list.length > 50) list = list.slice(0, 50);
-      chrome.storage.local.set({ cxai_history: list });
+      if (list.length > L.MAX_HISTORY) list = list.slice(0, L.MAX_HISTORY);
+      var setObj = {}; setObj[K.HISTORY] = list;
+      chrome.storage.local.set(setObj);
       renderHistory(list);
     });
   }
@@ -180,23 +295,32 @@
     var el = panelEl ? panelEl.querySelector('#cxai-history-list') : null;
     if (!el) return;
     if (!list || list.length === 0) {
-      el.innerHTML = '<div style="color:#999;font-size:11px;padding:8px;">暂无记录</div>';
+      el.innerHTML = '<div style="color:#999;font-size:11px;padding:16px 8px;text-align:center;">📋 还没有执行记录<br/><span style="color:#bbb;font-size:10px;">完成任务后会出现在这里</span></div>';
       return;
     }
     var typeIcons = { tech: '💻', business: '📊', writing: '✍', design: '🎨' };
-    var modeIcons = { file: '📄', chat: '💬' };
+    var modeIcons = { file: '📄', chat: '💬', discuss: '💭' };
+    function scoreCls(s) {
+      if (s === 'ERR') return 'err';
+      if (s === '✓') return 'done';
+      var n = parseInt(s);
+      if (isNaN(n)) return 'done';
+      if (n >= 90) return 'high';
+      if (n >= 70) return 'mid';
+      return 'low';
+    }
     var html = '';
     for (var i = 0; i < list.length; i++) {
       var h = list[i];
-      var scoreColor = h.score === 'ERR' ? '#e74c3c' : (parseInt(h.score) >= 90 ? '#27ae60' : (parseInt(h.score) >= 70 ? '#f39c12' : '#e74c3c'));
-      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f0f0f0;font-size:11px;">'
-        + '<div style="flex:1;min-width:0;">'
-        + '<span>' + (modeIcons[h.taskMode] || typeIcons[h.type] || '📋') + ' </span>'
-        + '<span style="color:#333;" title="' + (h.title || '') + '">' + truncate(h.title || '未知', 18) + '</span>'
+      var icon = modeIcons[h.taskMode] || typeIcons[h.type] || '📋';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 2px;border-bottom:1px solid #f0f0f0;font-size:11px;">'
+        + '<div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;">'
+        + '<span style="font-size:13px;">' + icon + '</span>'
+        + '<span style="color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(h.title || '') + '">' + escHtml(truncate(h.title || '未知', 18)) + '</span>'
         + '</div>'
         + '<div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">'
-        + '<span style="color:' + scoreColor + ';font-weight:600;">' + h.score + '</span>'
-        + '<span style="color:#aaa;font-size:10px;">' + (h.time || '').replace(/^\d{4}\//, '') + '</span>'
+        + '<span class="cxai-score-badge ' + scoreCls(h.score) + '">' + escHtml(String(h.score)) + '</span>'
+        + '<span style="color:#aaa;font-size:10px;">' + escHtml((h.time || '').replace(/^\d{4}\//, '')) + '</span>'
         + '</div></div>';
     }
     el.innerHTML = html;
@@ -428,18 +552,11 @@
 
   async function callDeepSeek(conversationHistory, taskInfo) {
     const messages = buildDeepSeekMessages(conversationHistory, taskInfo);
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({
-        type: 'DEEPSEEK_CHAT',
-        apiKey: config.apiKey,
-        baseUrl: config.baseUrl,
-        model: config.model,
-        messages,
-      }, (resp) => {
-        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-        if (resp && resp.success) resolve(resp.data);
-        else reject(new Error(resp ? resp.error : '通信失败'));
-      });
+    return bgChat({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      messages,
     });
   }
 
@@ -482,10 +599,14 @@
 
   function testConnection() {
     saveConfig();
-    if (!config.apiKey) { log('❌ 请先填写 API Key', 'error'); return; }
+    if (!config.apiKey) {
+      log('❌ 请先填写 API Key', 'error');
+      toast('请先填写 API Key', 'warn');
+      return;
+    }
     const testBtn = panelEl.querySelector('#cxai-btn-test');
     testBtn.disabled = true;
-    testBtn.textContent = '测试中...';
+    testBtn.innerHTML = '<span class="cxai-spinner"></span> 测试中';
     log('正在测试 DeepSeek 连接...', 'info');
 
     chrome.runtime.sendMessage({
@@ -497,13 +618,18 @@
       testBtn.disabled = false;
       testBtn.textContent = '测试连接';
       if (chrome.runtime.lastError) {
-        log('❌ 通信失败: ' + chrome.runtime.lastError.message, 'error');
+        var msg = normalizeRuntimeError(chrome.runtime.lastError);
+        log('❌ 通信失败: ' + msg, 'error');
+        toast('连接失败: ' + msg, 'error');
         return;
       }
       if (resp && resp.success) {
         log('✓ ' + resp.data, 'success');
+        toast('连接成功', 'success');
       } else {
-        log('❌ ' + (resp ? resp.error : '未知错误'), 'error');
+        var err = resp ? resp.error : '未知错误';
+        log('❌ ' + err, 'error');
+        toast('连接失败: ' + err, 'error');
       }
     });
   }
@@ -771,23 +897,15 @@
         + '\n注意：这次要重点改进上述不足，优化文档质量。';
     }
 
-    var docContent = await new Promise(function (resolve, reject) {
-      chrome.runtime.sendMessage({
-        type: 'DEEPSEEK_CHAT',
-        apiKey: config.apiKey,
-        baseUrl: config.baseUrl,
-        model: config.model,
-        messages: [
-          { role: 'system', content: docPrompt },
-          { role: 'user', content: '请根据任务要求生成完整的实践报告文档。' }
-        ],
-        maxTokens: 4000
-      }, function (resp) {
-        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-        if (!resp) return reject(new Error('无响应'));
-        if (resp.success) resolve(resp.data);
-        else reject(new Error(resp.error || '未知错误'));
-      });
+    var docContent = await bgChat({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      messages: [
+        { role: 'system', content: docPrompt },
+        { role: 'user', content: '请根据任务要求生成完整的实践报告文档。' }
+      ],
+      maxTokens: T.DEEPSEEK_DOC_MAX_TOKENS
     });
     if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
     if (!docContent || !docContent.trim()) throw new Error('DeepSeek 返回内容为空');
@@ -821,9 +939,11 @@
 
     // 等待可以评估
     log('WAIT: 等待文件解析完成...', 'info');
+    var parsePollMs = 2000;
+    var parseMaxIter = Math.ceil(T.FILE_PARSE / parsePollMs);
     var waitCount = 0;
-    while (waitCount < 30) {
-      await sleep(2000);
+    while (waitCount < parseMaxIter) {
+      await sleep(parsePollMs);
       if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
       var checkSt = await pageCall('getState');
       if (checkSt.canStartEvaluate) {
@@ -833,13 +953,15 @@
       waitCount++;
       if (waitCount % 5 === 0) log('WAIT: 仍在解析... (' + waitCount * 2 + 's)', 'info');
     }
-    if (waitCount >= 30) throw new Error('文件解析超时(60s)');
+    if (waitCount >= parseMaxIter) throw new Error('文件解析超时(' + Math.round(T.FILE_PARSE / 1000) + 's)');
     setProgress(80);
   }
 
   // ==================== 主题讨论任务 ====================
 
   function buildDiscussPrompt(topicTitle, topicContent) {
+    var lenKey = config.discussLength || 'medium';
+    var lenRange = (DISCUSS_LENGTHS[lenKey] || DISCUSS_LENGTHS.medium).range;
     return '你是一名认真且有独立见解的大学生，正在参与一个课程的主题讨论。\n\n'
       + '【讨论话题】\n'
       + (topicTitle ? '标题：' + topicTitle + '\n' : '')
@@ -848,7 +970,7 @@
       + '1. 以大学生身份发表你对该话题的看法和理解\n'
       + '2. 观点要有深度，结合所学知识和实际案例分析\n'
       + '3. 结构清晰：先表明核心观点，再展开论述（2-3个要点），最后总结\n'
-      + '4. 字数控制在200-400字，不要太长也不要敷衍\n'
+      + '4. 字数控制在' + lenRange + '字，不要太长也不要敷衍\n'
       + '5. 语言自然、有个人见解，避免空话套话和AI味\n'
       + '6. 不要使用markdown格式、列表符号，用纯文本自然段落表达\n'
       + '7. 直接输出你的讨论回复内容，不要加任何前缀';
@@ -894,23 +1016,15 @@
         prompt += '\n\n【补充要求】\n' + config.customPrompt;
       }
 
-      var replyText = await new Promise(function (resolve, reject) {
-        chrome.runtime.sendMessage({
-          type: 'DEEPSEEK_CHAT',
-          apiKey: config.apiKey,
-          baseUrl: config.baseUrl || DEFAULT_CONFIG.baseUrl,
-          model: config.model || DEFAULT_CONFIG.model,
-          messages: [
-            { role: 'system', content: prompt },
-            { role: 'user', content: '请对以上话题发表你的看法。' }
-          ],
-          maxTokens: 1200
-        }, function (resp) {
-          if (chrome.runtime.lastError) return reject(new Error(normalizeRuntimeError(chrome.runtime.lastError)));
-          if (!resp) return reject(new Error('无响应'));
-          if (resp.success === false || resp.error) return reject(new Error(resp.error || '请求失败'));
-          resolve(resp.data || resp.reply || '');
-        });
+      var replyText = await bgChat({
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl || DEFAULT_CONFIG.baseUrl,
+        model: config.model || DEFAULT_CONFIG.model,
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: '请对以上话题发表你的看法。' }
+        ],
+        maxTokens: T.DEEPSEEK_DEFAULT_MAX_TOKENS
       });
 
       if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
@@ -938,6 +1052,7 @@
       if (submitResult.status === 'success') {
         log('\nDONE: 讨论回复已提交成功！', 'success');
         setStatus('DONE', 'done');
+        toast('讨论回复已提交', 'success');
         saveHistory({ title: st.topicTitle || '主题讨论', score: '✓', type: 'discuss', rounds: 1, taskMode: 'discuss' });
       } else {
         log('⚠ 提交结果: ' + JSON.stringify(submitResult), 'warn');
@@ -1017,6 +1132,7 @@
       if (evalResult.status === 'success') {
         log('\nDONE: 评估完成。最终得分: ' + evalResult.score, 'success');
         setStatus('DONE · ' + evalResult.score, 'done');
+        toast('任务完成 · 得分 ' + evalResult.score, 'success');
         if (evalResult.feedback) {
           lastFeedback = evalResult.feedback;
           if (evalResult.feedback.shortcoming) log('📝 不足: ' + truncate(evalResult.feedback.shortcoming, 100), 'warn');
@@ -1026,11 +1142,13 @@
       } else {
         log('⚠ 评估结果: ' + JSON.stringify(evalResult), 'warn');
         setStatus('EVAL_ERR', 'error');
+        toast('评估失败', 'error');
         saveHistory({ title: st.title, score: 'ERR', type: detectedType, rounds: config.rounds, taskMode: 'chat' });
       }
     } catch (err) {
       log('\n❌ ' + err.message, 'error');
       setStatus('ERROR', 'error');
+      toast(err.message || '任务出错', 'error');
       console.error('[ChaoxingAI]', err);
     } finally {
       isRunning = false;
@@ -1109,6 +1227,7 @@
       if (evalResult.status === 'success') {
         log('\nDONE: 评估完成。最终得分: ' + evalResult.score, 'success');
         setStatus('DONE · ' + evalResult.score, 'done');
+        toast('任务完成 · 得分 ' + evalResult.score, 'success');
         // 保存评估反馈供重试优化使用
         if (evalResult.feedback) {
           lastFeedback = evalResult.feedback;
@@ -1124,12 +1243,14 @@
       } else {
         log('⚠ 评估结果: ' + JSON.stringify(evalResult), 'warn');
         setStatus('EVAL_ERR', 'error');
+        toast('评估失败', 'error');
         saveHistory({ title: st.title, score: 'ERR', type: detectedType, rounds: isFileTask ? 0 : config.rounds, taskMode: isFileTask ? 'file' : 'chat' });
       }
 
     } catch (err) {
       log('\n❌ ' + err.message, 'error');
       setStatus('ERROR', 'error');
+      toast(err.message || '任务出错', 'error');
       console.error('[ChaoxingAI]', err);
     } finally {
       isRunning = false;
@@ -1159,24 +1280,26 @@
     if (score >= config.targetScore) {
       log('✓ 已达到目标分数: ' + score + ' >= ' + config.targetScore, 'success');
       setStatus('DONE · ' + score + ' ✓', 'done');
-      chrome.storage.local.set({ cxai_retry_state: null });
+      var clearObj = {}; clearObj[K.RETRY_STATE] = null;
+      chrome.storage.local.set(clearObj);
       return;
     }
 
     // 读取重试次数
     var retryState = await new Promise(function (resolve) {
-      chrome.storage.local.get(['cxai_retry_state'], function (r) { resolve(r.cxai_retry_state || null); });
+      chrome.storage.local.get([K.RETRY_STATE], function (r) { resolve(r[K.RETRY_STATE] || null); });
     });
     var attempt = retryState ? (retryState.attempt || 1) : 1;
 
-    if (attempt >= 10) {
-      log('⚠ 已达最大重试次数 (10)，当前: ' + score, 'warn');
-      chrome.storage.local.set({ cxai_retry_state: null });
+    if (attempt >= L.MAX_RETRY_ATTEMPTS) {
+      log('⚠ 已达最大重试次数 (' + L.MAX_RETRY_ATTEMPTS + ')，当前: ' + score, 'warn');
+      var clearObj2 = {}; clearObj2[K.RETRY_STATE] = null;
+      chrome.storage.local.set(clearObj2);
       return;
     }
 
     log('RETRY: 分数 ' + score + ' < 目标 ' + config.targetScore + ' (第' + attempt + '次)，准备重新练习...', 'warn');
-    await sleep(3000);
+    await sleep(T.RETRY_DELAY);
 
     // 保存重试状态 + 评估反馈（页面跳转后恢复）
     var feedbackSummary = '';
@@ -1190,9 +1313,9 @@
       }
       feedbackSummary = parts.join('\n');
     }
-    chrome.storage.local.set({
-      cxai_retry_state: { targetScore: config.targetScore, attempt: attempt + 1, feedback: feedbackSummary }
-    });
+    var setObj = {};
+    setObj[K.RETRY_STATE] = { targetScore: config.targetScore, attempt: attempt + 1, feedback: feedbackSummary };
+    chrome.storage.local.set(setObj);
 
     log('RETRY: 点击"重新练习"，页面将跳转...', 'info');
     try {
@@ -1200,23 +1323,30 @@
       // retryTask 会点击按钮触发页面跳转，新页面加载后 checkRetryAutoStart 接管
     } catch (e) {
       log('RETRY: 重新练习失败 - ' + e.message, 'error');
-      chrome.storage.local.set({ cxai_retry_state: null });
+      var clearObj3 = {}; clearObj3[K.RETRY_STATE] = null;
+      chrome.storage.local.set(clearObj3);
     }
   }
 
   function stopTask() {
     isRunning = false;
+    isPaused = false;
     aborted = true;
     log('⚠ 正在停止... (可点击"继续"接上任务)', 'warn');
     setStatus('ABORTED', 'idle');
     updateButtons();
     // 手动停止时清除所有自动执行标志
-    chrome.storage.local.set({ cxai_batch_auto: false, cxai_batch_queue: [], cxai_retry_state: null });
+    var stopClear = {};
+    stopClear[K.BATCH_AUTO] = false;
+    stopClear[K.BATCH_QUEUE] = [];
+    stopClear[K.BATCH_FAILED] = [];
+    stopClear[K.RETRY_STATE] = null;
+    chrome.storage.local.set(stopClear);
   }
 
   function checkRetryAutoStart() {
-    chrome.storage.local.get(['cxai_retry_state'], function (r) {
-      var state = r.cxai_retry_state;
+    chrome.storage.local.get([K.RETRY_STATE], function (r) {
+      var state = r[K.RETRY_STATE];
       if (!state || !state.targetScore) return;
 
       // 恢复目标分数到配置
@@ -1234,7 +1364,7 @@
 
       setTimeout(function () {
         runTaskWithRetry();
-      }, 4000);
+      }, T.RUN_RETRY_AUTO_DELAY);
     });
   }
 
@@ -1252,66 +1382,144 @@
   }
 
   async function executeCurrentTaskForBatch() {
-    if (isDiscussPage) {
-      await runDiscussTask();
-    } else {
-      await startAutoTask();
+    var currentUrl = location.href;
+    var failed = false;
+    try {
+      if (isDiscussPage) {
+        await runDiscussTask();
+      } else {
+        await startAutoTask();
+      }
+      // 根据最终状态判断是否失败（status bar 的 class）
+      if (statusEl && /cxai-st-error/.test(statusEl.className)) failed = true;
+    } catch (e) {
+      failed = true;
+      log('BATCH: 当前任务异常 - ' + e.message + '，自动跳过', 'warn');
+    }
+    if (failed) {
+      // 记录失败
+      chrome.storage.local.get([K.BATCH_FAILED], function (r) {
+        var list = r[K.BATCH_FAILED] || [];
+        if (list.indexOf(currentUrl) === -1) list.push(currentUrl);
+        var o = {}; o[K.BATCH_FAILED] = list;
+        chrome.storage.local.set(o);
+      });
+    }
+    return !failed;
+  }
+
+  // 批量流程：执行当前任务 → (如暂停则等待) → 导航到下一个
+  function advanceBatch(queue, total, current, bar) {
+    setTimeout(async function () {
+      await executeCurrentTaskForBatch();
+      if (aborted) {
+        log('BATCH: 已中止，批量停止', 'warn');
+        return;
+      }
+      if (isPaused) {
+        log('BATCH: 已暂停，点击「继续」恢复', 'info');
+        showBatchPauseButton(queue, total, current, bar);
+        return;
+      }
+      if (queue.length > 0) {
+        var nextUrl = queue.shift();
+        showBatchProgress(current + 1, total, queue.length);
+        log('BATCH: 导航到下一个任务...', 'info');
+        chrome.runtime.sendMessage({ type: 'NAVIGATE_TASK', url: nextUrl, queue: queue });
+      } else {
+        (function () { var o = {}; o[K.BATCH_AUTO] = false; o[K.BATCH_QUEUE] = []; o[K.BATCH_TOTAL] = 0; chrome.storage.local.set(o); })();
+        showBatchComplete(total, bar);
+      }
+    }, 3000);
+  }
+
+  function showBatchComplete(total, bar) {
+    chrome.storage.local.get([K.BATCH_FAILED], function (r) {
+      var failed = r[K.BATCH_FAILED] || [];
+      bar.querySelector('#cxai-batch-count').textContent = failed.length > 0
+        ? ('完成 · 失败 ' + failed.length + ' 个')
+        : '全部完成!';
+      bar.querySelector('#cxai-batch-progress').style.width = '100%';
+      log('BATCH: 全部 ' + total + ' 个任务执行完成' + (failed.length ? ' · ' + failed.length + ' 个失败' : '!'), 'success');
+      if (failed.length > 0) {
+        toast('批量完成 · 失败 ' + failed.length + ' 个，可重新扫描后手动重试', 'warn');
+      } else {
+        toast('批量执行完成 · 共 ' + total + ' 个', 'success');
+      }
+      // 清除失败记录
+      var o = {}; o[K.BATCH_FAILED] = [];
+      chrome.storage.local.set(o);
+    });
+  }
+
+  function showBatchPauseButton(queue, total, current, bar) {
+    bar.innerHTML =
+      '<div style="margin-bottom:8px;"><span style="font-size:12px;font-weight:600;color:#f59e0b;">⏸ 批量已暂停</span></div>'
+      + '<div style="font-size:12px;color:#555;margin-bottom:10px;">剩余 ' + queue.length + ' 个任务</div>'
+      + '<div style="display:flex;gap:8px;">'
+      + '<button id="cxai-batch-resume-pause" style="flex:1;padding:7px 0;background:#4f8ff7;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">▶ 继续</button>'
+      + '<button id="cxai-batch-stop-pause" style="flex:1;padding:7px 0;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">✕ 停止</button>'
+      + '</div>';
+    bar.querySelector('#cxai-batch-resume-pause').addEventListener('click', function () {
+      isPaused = false;
+      if (queue.length === 0) { showBatchComplete(total, bar); return; }
+      var nextUrl = queue.shift();
+      chrome.runtime.sendMessage({ type: 'NAVIGATE_TASK', url: nextUrl, queue: queue });
+    });
+    bar.querySelector('#cxai-batch-stop-pause').addEventListener('click', function () {
+      isPaused = false;
+      (function () { var o = {}; o[K.BATCH_AUTO] = false; o[K.BATCH_QUEUE] = []; o[K.BATCH_TOTAL] = 0; chrome.storage.local.set(o); })();
+      bar.style.display = 'none';
+      log('BATCH: 用户停止批量', 'warn');
+    });
+  }
+
+  // 渲染批量运行中 UI（带暂停按钮）
+  function renderBatchRunningBar(bar) {
+    bar.style.display = 'block';
+    bar.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
+      + '<span style="font-size:12px;font-weight:600;color:#2b7de9;">📋 批量执行中</span>'
+      + '<div style="display:flex;gap:6px;align-items:center;">'
+      + '<span id="cxai-batch-count" style="font-size:12px;color:#555;"></span>'
+      + '<button id="cxai-batch-pause" title="暂停批量" style="padding:2px 8px;background:#fff;border:1px solid #ddd;border-radius:4px;cursor:pointer;font-size:11px;color:#f59e0b;">⏸</button>'
+      + '</div></div>'
+      + '<div style="height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">'
+      + '<div id="cxai-batch-progress" style="height:100%;background:linear-gradient(90deg,#4f8ff7,#6c63ff);border-radius:3px;transition:width .4s;width:0%;"></div>'
+      + '</div>';
+    var pauseBtn = bar.querySelector('#cxai-batch-pause');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', function () {
+        isPaused = true;
+        pauseBtn.disabled = true;
+        pauseBtn.textContent = '⏸ 将在当前任务结束后暂停';
+        toast('暂停中...当前任务结束后生效', 'info');
+        log('BATCH: 用户请求暂停', 'info');
+      });
     }
   }
 
   function checkBatchAutoStart() {
-    chrome.storage.local.get(['cxai_batch_auto', 'cxai_batch_queue', 'cxai_batch_total'], function (r) {
-      if (!r.cxai_batch_auto) return;
+    chrome.storage.local.get([K.BATCH_AUTO, K.BATCH_QUEUE, K.BATCH_TOTAL], function (r) {
+      if (!r[K.BATCH_AUTO]) return;
 
-      var queue = r.cxai_batch_queue || [];
-      var total = r.cxai_batch_total || (queue.length + 1);
+      var queue = r[K.BATCH_QUEUE] || [];
+      var total = r[K.BATCH_TOTAL] || (queue.length + 1);
       var current = total - queue.length;
 
       var bar = panelEl.querySelector('#cxai-batch-bar');
       if (!bar) return;
 
-      // 讨论页自动继续，不需要用户手动确认
+      // 讨论页自动继续
       if (isDiscussPage) {
-        bar.style.display = 'block';
-        bar.innerHTML =
-          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
-          + '<span style="font-size:12px;font-weight:600;color:#2b7de9;">📋 批量执行中</span>'
-          + '<span id="cxai-batch-count" style="font-size:12px;color:#555;"></span>'
-          + '</div>'
-          + '<div style="height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">'
-          + '<div id="cxai-batch-progress" style="height:100%;background:linear-gradient(90deg,#4f8ff7,#6c63ff);border-radius:3px;transition:width .4s;width:0%;"></div>'
-          + '</div>';
+        renderBatchRunningBar(bar);
         showBatchProgress(current, total, queue.length);
         log('BATCH: 讨论页自动继续 (第 ' + current + '/' + total + ')...', 'info');
-
-        setTimeout(async function () {
-          await executeCurrentTaskForBatch();
-
-          if (aborted) {
-            log('BATCH: 已中止，批量停止', 'warn');
-            return;
-          }
-
-          if (queue.length > 0) {
-            var nextUrl = queue.shift();
-            showBatchProgress(current + 1, total, queue.length);
-            log('BATCH: 导航到下一个任务...', 'info');
-            chrome.runtime.sendMessage({
-              type: 'NAVIGATE_TASK',
-              url: nextUrl,
-              queue: queue,
-            });
-          } else {
-            chrome.storage.local.set({ cxai_batch_auto: false, cxai_batch_queue: [], cxai_batch_total: 0 });
-            bar.querySelector('#cxai-batch-count').textContent = '全部完成!';
-            bar.querySelector('#cxai-batch-progress').style.width = '100%';
-            log('BATCH: 全部 ' + total + ' 个任务执行完成!', 'success');
-          }
-        }, 3000);
+        advanceBatch(queue, total, current, bar);
         return;
       }
 
-      // 非讨论页：显示确认提示
+      // AI 实践页：显示确认提示
       bar.style.display = 'block';
       bar.innerHTML =
         '<div style="margin-bottom:8px;">'
@@ -1325,48 +1533,15 @@
 
       log('BATCH: 检测到未完成批量 (第 ' + current + '/' + total + ')，等待确认...', 'info');
 
-      // 继续按钮
       bar.querySelector('#cxai-batch-resume').addEventListener('click', function () {
-        bar.innerHTML =
-          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
-          + '<span style="font-size:12px;font-weight:600;color:#2b7de9;">📋 批量执行中</span>'
-          + '<span id="cxai-batch-count" style="font-size:12px;color:#555;"></span>'
-          + '</div>'
-          + '<div style="height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">'
-          + '<div id="cxai-batch-progress" style="height:100%;background:linear-gradient(90deg,#4f8ff7,#6c63ff);border-radius:3px;transition:width .4s;width:0%;"></div>'
-          + '</div>';
+        renderBatchRunningBar(bar);
         showBatchProgress(current, total, queue.length);
         log('BATCH: 用户确认继续，开始执行...', 'info');
-
-        setTimeout(async function () {
-          await executeCurrentTaskForBatch();
-
-          if (aborted) {
-            log('BATCH: 已中止，批量停止', 'warn');
-            return;
-          }
-
-          if (queue.length > 0) {
-            var nextUrl = queue.shift();
-            showBatchProgress(current + 1, total, queue.length);
-            log('BATCH: 导航到下一个任务...', 'info');
-            chrome.runtime.sendMessage({
-              type: 'NAVIGATE_TASK',
-              url: nextUrl,
-              queue: queue,
-            });
-          } else {
-            chrome.storage.local.set({ cxai_batch_auto: false, cxai_batch_queue: [], cxai_batch_total: 0 });
-            bar.querySelector('#cxai-batch-count').textContent = '全部完成!';
-            bar.querySelector('#cxai-batch-progress').style.width = '100%';
-            log('BATCH: 全部 ' + total + ' 个任务执行完成!', 'success');
-          }
-        }, 3000);
+        advanceBatch(queue, total, current, bar);
       });
 
-      // 放弃按钮
       bar.querySelector('#cxai-batch-dismiss').addEventListener('click', function () {
-        chrome.storage.local.set({ cxai_batch_auto: false, cxai_batch_queue: [], cxai_batch_total: 0 });
+        (function () { var o = {}; o[K.BATCH_AUTO] = false; o[K.BATCH_QUEUE] = []; o[K.BATCH_TOTAL] = 0; chrome.storage.local.set(o); })();
         bar.style.display = 'none';
         log('BATCH: 已放弃未完成的批量任务', 'warn');
       });
@@ -1376,10 +1551,81 @@
   // ==================== 配置存取 ====================
 
   function loadConfig(cb) {
-    chrome.storage.local.get(['cxai_config'], (r) => {
-      if (r.cxai_config) config = { ...DEFAULT_CONFIG, ...r.cxai_config };
+    chrome.storage.local.get([K.PROFILES, K.ACTIVE_PROFILE, K.CONFIG], (r) => {
+      profiles = r[K.PROFILES] || {};
+      activeProfile = r[K.ACTIVE_PROFILE] || 'default';
+
+      // 旧版迁移：存在 CONFIG 但没 PROFILES
+      if (r[K.CONFIG] && Object.keys(profiles).length === 0) {
+        profiles['default'] = { ...DEFAULT_CONFIG, ...r[K.CONFIG] };
+        persistProfiles();
+      }
+      if (!profiles[activeProfile]) {
+        // 找不到当前 profile 就用第一个或 default
+        var names = Object.keys(profiles);
+        activeProfile = names[0] || 'default';
+        if (!profiles[activeProfile]) profiles[activeProfile] = { ...DEFAULT_CONFIG };
+      }
+      config = { ...DEFAULT_CONFIG, ...profiles[activeProfile] };
       if (cb) cb();
     });
+  }
+
+  function persistProfiles() {
+    var o = {};
+    o[K.PROFILES] = profiles;
+    o[K.ACTIVE_PROFILE] = activeProfile;
+    chrome.storage.local.set(o);
+  }
+
+  function switchProfile(name) {
+    if (!profiles[name]) return;
+    activeProfile = name;
+    config = { ...DEFAULT_CONFIG, ...profiles[name] };
+    persistProfiles();
+    fillConfigUI();
+    renderProfileList();
+    toast('已切换到: ' + name, 'info');
+  }
+
+  function createProfile(name) {
+    name = (name || '').trim();
+    if (!name) return;
+    if (profiles[name]) { toast('名称已存在', 'warn'); return; }
+    profiles[name] = { ...DEFAULT_CONFIG };
+    activeProfile = name;
+    config = { ...profiles[name] };
+    persistProfiles();
+    fillConfigUI();
+    renderProfileList();
+    toast('已创建: ' + name, 'success');
+  }
+
+  function deleteProfile(name) {
+    if (!profiles[name]) return;
+    if (Object.keys(profiles).length <= 1) {
+      toast('至少需保留一个配置', 'warn');
+      return;
+    }
+    delete profiles[name];
+    if (activeProfile === name) {
+      activeProfile = Object.keys(profiles)[0];
+      config = { ...DEFAULT_CONFIG, ...profiles[activeProfile] };
+      fillConfigUI();
+    }
+    persistProfiles();
+    renderProfileList();
+    toast('已删除: ' + name, 'info');
+  }
+
+  function renderProfileList() {
+    if (!panelEl) return;
+    var sel = panelEl.querySelector('#cxai-profile-select');
+    if (!sel) return;
+    var names = Object.keys(profiles);
+    sel.innerHTML = names.map(function (n) {
+      return '<option value="' + escHtml(n) + '"' + (n === activeProfile ? ' selected' : '') + '>' + escHtml(n) + '</option>';
+    }).join('');
   }
 
   function saveConfig() {
@@ -1390,10 +1636,15 @@
     config.delay = parseInt(panelEl.querySelector('#cxai-delay').value) || DEFAULT_CONFIG.delay;
     config.customPrompt = panelEl.querySelector('#cxai-custom-prompt').value.trim();
     config.promptStyle = panelEl.querySelector('#cxai-prompt-style').value;
+    var dlEl = panelEl.querySelector('#cxai-discuss-length');
+    if (dlEl) config.discussLength = dlEl.value;
     var tsEl = panelEl.querySelector('#cxai-target-score');
     if (tsEl) config.targetScore = parseInt(tsEl.value) || 0;
-    chrome.storage.local.set({ cxai_config: config });
-    log('✓ 设置已保存', 'success');
+    // 存入当前 profile
+    profiles[activeProfile] = { ...config };
+    persistProfiles();
+    log('✓ 设置已保存 [' + activeProfile + ']', 'success');
+    toast('设置已保存', 'success');
   }
 
   function fillConfigUI() {
@@ -1405,6 +1656,8 @@
     q('#cxai-delay').value = config.delay;
     q('#cxai-custom-prompt').value = config.customPrompt || '';
     q('#cxai-prompt-style').value = config.promptStyle || 'balanced';
+    var dlEl = q('#cxai-discuss-length');
+    if (dlEl) dlEl.value = config.discussLength || 'medium';
     var tsEl = q('#cxai-target-score');
     if (tsEl) tsEl.value = config.targetScore || 0;
   }
@@ -1522,7 +1775,15 @@
         if (t && t.url) batchTaskSelection[t.url] = true;
       });
 
-      chrome.storage.local.set({ cxai_batch_tasks: collectedTasks });
+      // 存入扫描缓存（带 URL + 时间戳，1小时内恢复）
+      var cache = {};
+      cache[K.SCAN_CACHE] = {
+        url: location.href,
+        tasks: collectedTasks,
+        time: Date.now(),
+      };
+      cache[K.BATCH_TASKS] = collectedTasks;
+      chrome.storage.local.set(cache);
 
       if (collectedTasks.length === 0) {
         batchStatus.innerHTML = '<span style="color:#e67e22;">⚠ 未找到可执行任务</span>';
@@ -1542,6 +1803,31 @@
       scanBtn.textContent = '📡 重新扫描';
       scanBtn.disabled = false;
     }
+  }
+
+  // 尝试恢复上次扫描结果（同一URL + 1小时内）
+  function restoreScanCache() {
+    if (!isTaskListPage || !panelEl) return;
+    chrome.storage.local.get([K.SCAN_CACHE], function (r) {
+      var cache = r[K.SCAN_CACHE];
+      if (!cache || !cache.tasks || cache.tasks.length === 0) return;
+      if (Date.now() - (cache.time || 0) > L.SCAN_CACHE_TTL) return;
+      if (cache.url !== location.href) return;
+
+      collectedTasks = cache.tasks;
+      batchTaskSelection = {};
+      collectedTasks.forEach(function (t) {
+        if (t && t.url) batchTaskSelection[t.url] = t.isFinish !== true; // 默认勾选未完成
+      });
+      var batchStatus = panelEl.querySelector('#cxai-batch-status');
+      if (batchStatus) {
+        batchStatus.style.display = 'block';
+        var ageMin = Math.round((Date.now() - cache.time) / 60000);
+        batchStatus.innerHTML = '<span style="color:#2b7de9;">♻ 已恢复上次扫描结果 (' + ageMin + '分钟前 · ' + collectedTasks.length + '个)</span>';
+      }
+      renderBatchList(collectedTasks);
+      log('SCAN: 恢复缓存 → ' + collectedTasks.length + ' 个任务', 'info');
+    });
   }
 
   function renderBatchList(tasks) {
@@ -1602,6 +1888,24 @@
     updateBatchExecBtn();
   }
 
+  function selectUndoneOnly() {
+    var checks = panelEl.querySelectorAll('.cxai-bp-check');
+    var undoneCount = 0;
+    checks.forEach(function (c) {
+      var idx = parseInt(c.dataset.idx, 10);
+      var task = collectedTasks[idx];
+      // isFinish === true 时不选，其他（false 或 undefined）都选
+      var shouldCheck = !(task && task.isFinish === true);
+      c.checked = shouldCheck;
+      if (shouldCheck) undoneCount++;
+      if (task && task.url) batchTaskSelection[task.url] = shouldCheck;
+      var item = c.closest('.cxai-batch-item');
+      if (item) item.classList.toggle('is-checked', shouldCheck);
+    });
+    updateBatchExecBtn();
+    toast('已选中 ' + undoneCount + ' 个未完成任务', 'info');
+  }
+
   function startBatchExecute() {
     var checks = panelEl.querySelectorAll('.cxai-bp-check:checked');
     var urls = [];
@@ -1620,7 +1924,12 @@
 
     var total = urls.length;
     var firstUrl = urls.shift();
-    chrome.storage.local.set({ cxai_batch_queue: urls, cxai_batch_auto: true, cxai_batch_total: total }, function () {
+    var batchObj = {};
+    batchObj[K.BATCH_QUEUE] = urls;
+    batchObj[K.BATCH_AUTO] = true;
+    batchObj[K.BATCH_TOTAL] = total;
+    batchObj[K.BATCH_FAILED] = []; // 重置失败列表
+    chrome.storage.local.set(batchObj, function () {
       chrome.runtime.sendMessage({ type: 'NAVIGATE_TASK', url: firstUrl, queue: urls });
     });
   }
@@ -1675,7 +1984,8 @@
         + '<div class="cxai-card-title"><span class="cxai-pulse"></span>批量任务_BATCH</div>'
         + '<div style="display:flex;gap:8px;margin-bottom:8px;">'
         + '<button class="cxai-btn-exec" id="cxai-btn-scan" style="flex:1;font-size:12px;">📡 扫描任务</button>'
-        + '<button class="cxai-btn-sm cxai-btn-test" id="cxai-btn-selall" style="padding:6px 12px;flex:none;">全选</button>'
+        + '<button class="cxai-btn-sm cxai-btn-test" id="cxai-btn-selundone" style="padding:6px 10px;flex:none;" title="只选未完成">⏳ 仅未完成</button>'
+        + '<button class="cxai-btn-sm cxai-btn-test" id="cxai-btn-selall" style="padding:6px 10px;flex:none;">全选</button>'
         + '</div>'
         + '<div id="cxai-batch-status" style="font-size:11px;color:#888;margin-bottom:6px;display:none;"></div>'
         + '<div id="cxai-batch-list" style="max-height:220px;overflow-y:auto;">'
@@ -1766,7 +2076,12 @@
       + '<button class="cxai-collapsible-header" id="cxai-settings-toggle">'
       + '<span>⚙ 系统配置_SYS</span><span class="cxai-chevron">▼</span></button>'
       + '<div class="cxai-collapsible-content" id="cxai-settings-body">'
-      + '<div class="cxai-field"><label>API Key</label><input type="password" id="cxai-apikey" placeholder="sk-..." /></div>'
+      + '<div class="cxai-field"><label>配置方案</label><div style="display:flex;gap:6px;align-items:stretch;">'
+      + '<select id="cxai-profile-select" style="flex:1;padding:8px 10px;background:#f7f7f8;border:1px solid #ddd;border-radius:6px;color:#1a1a1a;font-family:inherit;font-size:12px;outline:none;cursor:pointer;"></select>'
+      + '<button type="button" id="cxai-btn-profile-new" title="新建配置" style="padding:0 10px;background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;color:#4f8ff7;font-weight:700;">+</button>'
+      + '<button type="button" id="cxai-btn-profile-del" title="删除当前" style="padding:0 10px;background:#fff;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;color:#dc2626;font-weight:700;">−</button>'
+      + '</div></div>'
+      + '<div class="cxai-field"><label>API Key</label><div class="cxai-input-with-eye"><input type="password" id="cxai-apikey" placeholder="sk-..." /><button type="button" class="cxai-eye-btn" id="cxai-eye-btn" title="显示/隐藏">👁</button></div></div>'
       + '<div class="cxai-field"><label>接口地址</label><input type="text" id="cxai-baseurl" placeholder="https://api.deepseek.com" /></div>'
       + '<div class="cxai-row cxai-row-3">'
       + '<div class="cxai-field"><label>模型</label><select id="cxai-model" style="width:100%;padding:8px 10px;background:#f7f7f8;border:1px solid #ddd;border-radius:6px;color:#1a1a1a;font-family:inherit;font-size:12px;outline:none;box-sizing:border-box;cursor:pointer;"><option value="deepseek-chat">deepseek-chat</option><option value="deepseek-reasoner">deepseek-reasoner</option></select></div>'
@@ -1775,10 +2090,12 @@
       + '</div>'
       + '<div class="cxai-field"><label>对话风格</label><select id="cxai-prompt-style" style="width:100%;padding:8px 10px;background:#f7f7f8;border:1px solid #ddd;border-radius:6px;color:#1a1a1a;font-family:inherit;font-size:12px;outline:none;box-sizing:border-box;cursor:pointer;transition:border-color .15s,box-shadow .15s;"><option value="balanced">🎯 专业均衡 (默认)</option><option value="curious">🧭 探究追问</option><option value="deep">🛠 落地实战</option><option value="concise">⚡ 精准高效</option></select></div>'
       + '<div class="cxai-field"><label>补充要求 (可选)</label><textarea id="cxai-custom-prompt" rows="3" placeholder="例如：表达更自然口语化；每轮先回应再追问；优先讨论落地风险。不会覆盖角色设定，只做额外微调。" style="width:100%;padding:8px 10px;background:#f7f7f8;border:1px solid #ddd;border-radius:6px;color:#1a1a1a;font-family:inherit;font-size:12px;outline:none;box-sizing:border-box;resize:vertical;transition:border-color .15s,box-shadow .15s;"></textarea></div>'
+      + '<div class="cxai-field"><label>💭 讨论字数</label><select id="cxai-discuss-length" style="width:100%;padding:8px 10px;background:#f7f7f8;border:1px solid #ddd;border-radius:6px;color:#1a1a1a;font-family:inherit;font-size:12px;outline:none;box-sizing:border-box;cursor:pointer;"><option value="short">短 (120-200字)</option><option value="medium">中 (200-400字)</option><option value="long">长 (400-600字)</option></select></div>'
       + '<div class="cxai-btn-group" style="margin-top:8px;">'
       + '<button class="cxai-btn-sm cxai-btn-save" id="cxai-btn-save">保存</button>'
       + '<button class="cxai-btn-sm cxai-btn-test" id="cxai-btn-test">测试连接</button>'
       + '</div>'
+      + '<div id="cxai-usage-info" style="margin-top:10px;padding:8px 10px;background:#f9fafb;border:1px dashed #e0e4ec;border-radius:6px;font-size:11px;color:#666;text-align:center;">📊 尚未调用</div>'
       + '</div></div>'
 
       // 任务区（根据页面类型不同）
@@ -1835,10 +2152,44 @@
     panelEl.querySelector('#cxai-btn-save').addEventListener('click', saveConfig);
     panelEl.querySelector('#cxai-btn-test').addEventListener('click', testConnection);
 
+    // API Key 显示/隐藏
+    var eyeBtn = panelEl.querySelector('#cxai-eye-btn');
+    if (eyeBtn) {
+      eyeBtn.addEventListener('click', function () {
+        var input = panelEl.querySelector('#cxai-apikey');
+        if (input.type === 'password') {
+          input.type = 'text';
+          eyeBtn.textContent = '🙈';
+        } else {
+          input.type = 'password';
+          eyeBtn.textContent = '👁';
+        }
+      });
+    }
+
+    // Profile 切换/新建/删除
+    var profileSel = panelEl.querySelector('#cxai-profile-select');
+    if (profileSel) {
+      renderProfileList();
+      profileSel.addEventListener('change', function () { switchProfile(this.value); });
+      panelEl.querySelector('#cxai-btn-profile-new').addEventListener('click', function () {
+        var name = prompt('新配置名称:', '课程' + (Object.keys(profiles).length + 1));
+        if (name) createProfile(name);
+      });
+      panelEl.querySelector('#cxai-btn-profile-del').addEventListener('click', function () {
+        if (confirm('删除配置「' + activeProfile + '」？')) deleteProfile(activeProfile);
+      });
+    }
+
+    // 初始化 usage UI
+    updateUsageUI();
+
     // 页面特定事件
     if (isTaskListPage) {
       panelEl.querySelector('#cxai-btn-scan').addEventListener('click', startCollect);
       panelEl.querySelector('#cxai-btn-selall').addEventListener('click', toggleSelectAll);
+      var selUndoneBtn = panelEl.querySelector('#cxai-btn-selundone');
+      if (selUndoneBtn) selUndoneBtn.addEventListener('click', selectUndoneOnly);
       panelEl.querySelector('#cxai-btn-batch-exec').addEventListener('click', startBatchExecute);
     } else if (isDiscussPage) {
       startBtn.addEventListener('click', function () { runDiscussTask(); });
@@ -1867,12 +2218,13 @@
         historyToggle.classList.toggle('cxai-open', isOpen);
       });
       panelEl.querySelector('#cxai-btn-clear-history').addEventListener('click', function () {
-        chrome.storage.local.set({ cxai_history: [] });
+        var clearH = {}; clearH[K.HISTORY] = [];
+        chrome.storage.local.set(clearH);
         renderHistory([]);
       });
       // 初始加载历史
-      chrome.storage.local.get(['cxai_history'], function (r) {
-        renderHistory(r.cxai_history || []);
+      chrome.storage.local.get([K.HISTORY], function (r) {
+        renderHistory(r[K.HISTORY] || []);
       });
     }
 
@@ -1910,7 +2262,23 @@
           panelEl.classList.remove('cxai-dragging');
         }
       });
+
+      // 双击 header 复位到默认位置（右上角）
+      header.addEventListener('dblclick', function (e) {
+        if (e.target.closest('.cxai-header-dots')) return;
+        panelEl.style.left = '';
+        panelEl.style.top = '';
+        panelEl.style.right = '12px';
+        toast('面板位置已复位', 'info');
+      });
     })();
+
+    // 键盘快捷键: ESC 停止任务
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && isRunning && typeof stopTask === 'function') {
+        stopTask();
+      }
+    });
 
     fillConfigUI();
   }
@@ -1952,22 +2320,23 @@
       createPanel();
       if (isTaskListPage) {
         log('READY: 任务列表页已就绪，点击扫描按钮加载任务', 'info');
+        setTimeout(restoreScanCache, 800);
       } else if (isDiscussPage) {
         log('READY: 主题讨论页已就绪，点击"自动回复"开始', 'info');
         setTimeout(loadDiscussInfo, 2000);
-        setTimeout(checkBatchAutoStart, 4000);
+        setTimeout(checkBatchAutoStart, T.RUN_RETRY_AUTO_DELAY);
       } else {
         setTimeout(loadTaskInfo, 2000);
         // 检查是否有待恢复的重试或批量任务
         setTimeout(function () {
-          chrome.storage.local.get(['cxai_retry_state'], function (r) {
-            if (r.cxai_retry_state && r.cxai_retry_state.targetScore) {
+          chrome.storage.local.get([K.RETRY_STATE], function (r) {
+            if (r[K.RETRY_STATE] && r[K.RETRY_STATE].targetScore) {
               checkRetryAutoStart();
             } else {
               checkBatchAutoStart();
             }
           });
-        }, 4000);
+        }, T.RUN_RETRY_AUTO_DELAY);
       }
     });
   }

@@ -3,7 +3,7 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'DEEPSEEK_CHAT') {
     callDeepSeek(message.apiKey, message.baseUrl, message.model, message.messages, message.maxTokens)
-      .then(reply => sendResponse({ success: true, data: reply }))
+      .then(res => sendResponse({ success: true, data: res.content, usage: res.usage }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
@@ -82,7 +82,10 @@ async function callDeepSeek(apiKey, baseUrl, model, messages, maxTokens) {
   if (!data.choices || !data.choices[0]) {
     throw new Error('API 返回数据异常: ' + JSON.stringify(data).substring(0, 200));
   }
-  return data.choices[0].message.content;
+  return {
+    content: data.choices[0].message.content,
+    usage: data.usage || null,  // { prompt_tokens, completion_tokens, total_tokens }
+  };
 }
 
 async function fetchTaskList(courseId, cpi) {

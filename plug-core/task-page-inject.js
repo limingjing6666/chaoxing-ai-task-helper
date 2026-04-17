@@ -149,30 +149,6 @@
       var appEl = document.getElementById('main');
       var app = appEl && appEl.__vue__ ? appEl.__vue__ : null;
       var data = app && app.$data ? app.$data : null;
-      // === DEBUG: 打印 Vue 数据结构 ===
-      console.log('[ChaoxingAI DEBUG] appEl:', appEl, 'app:', app);
-      if (data) {
-        Object.keys(data).forEach(function (key) {
-          if (/^activeList\d+$/.test(key) && Array.isArray(data[key]) && data[key].length > 0) {
-            console.log('[ChaoxingAI DEBUG] ' + key + ' (' + data[key].length + '项):');
-            data[key].forEach(function (item, idx) {
-              if (item.activeType === 5 || item.activeType === '5') {
-                console.log('[ChaoxingAI DEBUG]   [' + idx + '] activeType=5 全部字段:', Object.keys(item));
-                try { console.log('[ChaoxingAI DEBUG]   [' + idx + '] RAW:', JSON.stringify(item).substring(0, 800)); } catch(e) { console.log('[ChaoxingAI DEBUG]   [' + idx + '] RAW stringify失败, keys:', Object.keys(item)); }
-              } else {
-                console.log('[ChaoxingAI DEBUG]   [' + idx + ']', JSON.stringify({
-                  name: item.name, title: item.title, activeType: item.activeType,
-                  activeTypeName: item.activeTypeName, typeName: item.typeName,
-                  url: item.url, stuUrl: item.stuUrl, content: typeof item.content === 'string' ? item.content.substring(0, 300) : item.content
-                }));
-              }
-            });
-          }
-        });
-      } else {
-        console.log('[ChaoxingAI DEBUG] Vue data 为空');
-      }
-      // === END DEBUG ===
       if (data) {
         (data.activeList4 || []).forEach(function (item) {
           pushTask(tasks, {
