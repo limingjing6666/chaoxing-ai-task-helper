@@ -1961,6 +1961,7 @@
       var subInfo = t.parentTask ? '<div class="cxai-batch-item-sub">' + escHtml(t.parentTask) + '</div>' : '';
       var tag = '';
       if (t.taskMode === 'discuss') tag += '<span class="cxai-batch-item-tag" style="margin-right:6px;background:#eef6ff;color:#2b7de9;">💬 讨论</span>';
+      else if (t.taskMode === 'code') tag += '<span class="cxai-batch-item-tag" style="margin-right:6px;background:#f0fff4;color:#22543d;">💻 代码</span>';
       else tag += '<span class="cxai-batch-item-tag" style="margin-right:6px;background:#f3f0ff;color:#6c63ff;">🤖 AI</span>';
       if (t.isFinish === true) tag = '<span class="cxai-batch-item-tag done">✓ 已完成</span>';
       else if (t.isFinish === false) tag = '<span class="cxai-batch-item-tag pending">○ 未完成</span>';
