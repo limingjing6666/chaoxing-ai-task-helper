@@ -19,6 +19,9 @@
     RETRY_DELAY: 3000,        // 重试间隔
     EMPTY_REPLY_RETRY: 3000,  // 空回复重试间隔
     RUN_RETRY_AUTO_DELAY: 4000, // 重试自动启动延时
+    CODE_GENERATE: 120000,     // DeepSeek code generation timeout
+    CODE_EVALUATE: 180000,     // Code evaluation polling timeout
+    CODE_EVAL_POLL: 2000,      // Code evaluation poll interval
   };
 
   // chrome.storage.local 键名
