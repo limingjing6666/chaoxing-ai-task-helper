@@ -387,19 +387,16 @@
         }
         if (!langEntry) return fail('未找到语言 codeNum=' + codeNum);
 
-        // Try app.changeLanguage (may fail if editor not ready)
-        if (typeof app.changeLanguage === 'function') {
-          try {
-            app.changeLanguage(codeNum);
-          } catch (e) {
-            // Editor not ready, fall through to direct set
+        // Directly set answerResult using Vue.set for reactivity
+        var c = app.current;
+        if (c && c.answerResult) {
+          if (typeof app.$set === 'function') {
+            app.$set(c.answerResult, 'languageIndex', codeNum);
+            app.$set(c.answerResult, 'languageName', langEntry.codeName);
+          } else {
+            c.answerResult.languageIndex = codeNum;
+            c.answerResult.languageName = langEntry.codeName;
           }
-        }
-
-        // Directly set answerResult (always works)
-        if (app.current && app.current.answerResult) {
-          app.current.answerResult.languageIndex = codeNum;
-          app.current.answerResult.languageName = langEntry.codeName;
           reply({ status: 'success', languageIndex: codeNum, languageName: langEntry.codeName });
         } else {
           fail('无法访问 answerResult');
@@ -415,28 +412,24 @@
       if (code === undefined || code === null) return fail('缺少 code 参数');
 
       try {
-        if (app.editors && Object.keys(app.editors).length > 0) {
-          var editorId = app.currentEditorId || Object.keys(app.editors)[0];
-          var editor = app.editors[editorId];
-          if (editor && editor.setValue) {
-            editor.setValue(code);
-            if (editor.dispatch) editor.dispatch({ type: 'changes' });
-            reply({ status: 'success', length: code.length });
-            return;
-          }
-        }
-
-        if (app.editor1Value !== undefined) {
-          app.editor1Value = code;
-          reply({ status: 'success', length: code.length });
-          return;
-        }
-
+        // Method 1: Direct CodeMirror DOM access (most reliable)
         var cmElement = document.querySelector('.CodeMirror');
         if (cmElement && cmElement.CodeMirror) {
           cmElement.CodeMirror.setValue(code);
+          cmElement.CodeMirror.clearHistory();
           reply({ status: 'success', length: code.length });
           return;
+        }
+
+        // Method 2: Try app.editors (if it's a real editor instance)
+        if (app.editors && Object.keys(app.editors).length > 0) {
+          var editorId = app.currentEditorId || Object.keys(app.editors)[0];
+          var editor = app.editors[editorId];
+          if (editor && typeof editor.setValue === 'function') {
+            editor.setValue(code);
+            reply({ status: 'success', length: code.length });
+            return;
+          }
         }
 
         fail('找不到代码编辑器实例');
