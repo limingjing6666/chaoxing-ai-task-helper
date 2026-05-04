@@ -39,7 +39,7 @@
     if (action === 'getState') {
       var c = app.current || {};
       try {
-        reply({
+        var stateData = {
           title: c.title || '',
           requirement: c.requirement || '',
           scene: c.scene || '',
@@ -57,7 +57,24 @@
           fileName: c.fileName || '',
           fileParseStatus: c.fileParseStatus || '',
           canStartEvaluate: app.canStartEvaluate,
-        });
+        };
+
+        // Add code-specific fields for type 4
+        if (c.type === 4) {
+          var contentText = '';
+          if (c.content || c.requirementContent) {
+            var tmp = document.createElement('div');
+            tmp.innerHTML = c.content || c.requirementContent || '';
+            contentText = tmp.textContent.trim();
+          }
+          stateData.requirement = contentText || c.requirement || '';
+          stateData.codeUuid = c.codeUuid || '';
+          stateData.langList = app.langList || {};
+          stateData.publishSetting = c.publishSetting || {};
+          stateData.answerResult = c.answerResult || null;
+        }
+
+        reply(stateData);
       } catch (err) {
         fail('getState 错误: ' + err.message);
       }
