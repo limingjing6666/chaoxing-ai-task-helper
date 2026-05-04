@@ -371,7 +371,7 @@
       setTimeout(function () { window.location.reload(); }, 100);
     }
 
-    // ========== setLanguage (代码编辑任务) ==========
+    // ========== setLanguage (代码编辑任务 - 点击UI选择器) ==========
     else if (action === 'setLanguage') {
       var codeNum = e.data.codeNum;
       if (codeNum === undefined || codeNum === null) return fail('缺少 codeNum 参数');
@@ -387,19 +387,42 @@
         }
         if (!langEntry) return fail('未找到语言 codeNum=' + codeNum);
 
-        // Directly set answerResult using Vue.set for reactivity
-        var c = app.current;
-        if (c && c.answerResult) {
-          if (typeof app.$set === 'function') {
-            app.$set(c.answerResult, 'languageIndex', codeNum);
-            app.$set(c.answerResult, 'languageName', langEntry.codeName);
-          } else {
+        // Click the language selector dropdown to open it
+        var langSelector = document.querySelector('.selectBoxLang.fl');
+        if (langSelector) {
+          langSelector.click();
+
+          // Find and click the matching language option
+          setTimeout(function () {
+            var langLinks = document.querySelectorAll('.selectBoxLang a');
+            var clicked = false;
+            for (var i = 0; i < langLinks.length; i++) {
+              if (langLinks[i].textContent.trim() === langEntry.codeName) {
+                langLinks[i].click();
+                clicked = true;
+                break;
+              }
+            }
+            if (!clicked) {
+              // Fallback: set directly
+              var c = app.current;
+              if (c && c.answerResult) {
+                c.answerResult.languageIndex = codeNum;
+                c.answerResult.languageName = langEntry.codeName;
+              }
+            }
+            reply({ status: 'success', languageIndex: codeNum, languageName: langEntry.codeName, clicked: clicked });
+          }, 200);
+        } else {
+          // No UI selector, set directly
+          var c = app.current;
+          if (c && c.answerResult) {
             c.answerResult.languageIndex = codeNum;
             c.answerResult.languageName = langEntry.codeName;
+            reply({ status: 'success', languageIndex: codeNum, languageName: langEntry.codeName });
+          } else {
+            fail('无法访问 answerResult');
           }
-          reply({ status: 'success', languageIndex: codeNum, languageName: langEntry.codeName });
-        } else {
-          fail('无法访问 answerResult');
         }
       } catch (err) {
         fail('setLanguage 错误: ' + err.message);
@@ -438,19 +461,55 @@
       }
     }
 
-    // ========== evaluateCode (代码编辑任务 - 只触发，不轮询) ==========
+    // ========== evaluateCode (代码编辑任务) ==========
     else if (action === 'evaluateCode') {
       try {
-        if (typeof app.saveAnswerResult === 'function') {
-          app.saveAnswerResult();
-        }
+        // Build answerResult JSON
+        var cmElement = document.querySelector('.CodeMirror');
+        var code = cmElement && cmElement.CodeMirror ? cmElement.CodeMirror.getValue() : '';
+        var c = app.current;
+        var answerResult = {
+          answerResultCode: code,
+          languageIndex: c.answerResult ? c.answerResult.languageIndex : -1,
+          languageName: c.answerResult ? c.answerResult.languageName : ''
+        };
 
-        setTimeout(function () {
-          if (typeof app.startEvaluationExecute === 'function') {
-            app.startEvaluationExecute();
-          } else if (typeof app.startEvaluate === 'function') {
-            app.startEvaluate();
+        // Call init API to create record (this is what "保存代码" button does)
+        var initUrl = '/mooc2-ans/ai-evaluate/v2/answer/init?courseid=' + (new URLSearchParams(location.search).get('courseid') || '')
+          + '&clazzid=' + (new URLSearchParams(location.search).get('clazzid') || '')
+          + '&cpi=' + (new URLSearchParams(location.search).get('cpi') || '')
+          + '&publishRelationUuid=' + (c.publishRelationUuid || '');
+
+        fetch(initUrl, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+          body: 'type=4&codeUuid=' + (c.codeUuid || '') + '&answerResult=' + encodeURIComponent(JSON.stringify(answerResult))
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.status && data.data && data.data.recordUuid) {
+            // Update Vue state with recordUuid
+            c.recordUuid = data.data.recordUuid;
+            if (data.data.answerUuid) c.answerUuid = data.data.answerUuid;
+
+            // Now start evaluation
+            setTimeout(function () {
+              if (typeof app.startEvaluationExecute === 'function') {
+                app.startEvaluationExecute();
+              } else if (typeof app.startEvaluate === 'function') {
+                app.startEvaluate();
+              }
+            }, 500);
+
+            reply({ status: 'started', recordUuid: data.data.recordUuid });
+          } else {
+            fail('初始化作答记录失败: ' + (data.msg || JSON.stringify(data)));
           }
+        })
+        .catch(function(err) {
+          fail('evaluateCode 网络错误: ' + err.message);
+        });
         }, 1000);
 
         reply({ status: 'started' });
