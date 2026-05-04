@@ -1165,6 +1165,10 @@
     log('LANG: ' + langResult.languageName + ' 已设置', 'success');
     setProgress(40);
 
+    // Wait for UI to settle after language selection
+    await sleep(1000);
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+
     log('CODE: 填入代码...', 'info');
     var codeResult = await pageCall('setCode', { code: codeContent });
     if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
