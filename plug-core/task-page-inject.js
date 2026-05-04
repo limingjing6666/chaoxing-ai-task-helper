@@ -192,6 +192,17 @@
                 isFinish: item.status === 2 ? true : (item.userStatus === 2 ? true : false)
               });
             }
+            // 代码编辑型 AI 实践 (activeType=4)
+            else if (aType === 4) {
+              var itemUrl4 = extractTaskUrlFromItem(item);
+              if (!itemUrl4) return;
+              pushTask(tasks, {
+                name: item.name || item.title || item.nameOne || '未命名代码任务',
+                url: itemUrl4,
+                source: 'vue-' + key,
+                taskMode: 'code'
+              });
+            }
           });
         });
       }
