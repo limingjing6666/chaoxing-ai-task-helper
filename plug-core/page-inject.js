@@ -354,6 +354,170 @@
       setTimeout(function () { window.location.reload(); }, 100);
     }
 
+    // ========== setLanguage (代码编辑任务) ==========
+    else if (action === 'setLanguage') {
+      var codeNum = e.data.codeNum;
+      if (codeNum === undefined || codeNum === null) return fail('缺少 codeNum 参数');
+
+      try {
+        if (typeof app.changeLanguage === 'function') {
+          app.changeLanguage(codeNum);
+          setTimeout(function () {
+            var c = app.current;
+            reply({
+              status: 'success',
+              languageIndex: c.answerResult ? c.answerResult.languageIndex : -1,
+              languageName: c.answerResult ? c.answerResult.languageName : '',
+            });
+          }, 500);
+          return;
+        }
+
+        if (app.current && app.current.answerResult) {
+          var langList = app.langList || {};
+          var langEntry = null;
+          for (var key in langList) {
+            if (langList[key].codeNum === codeNum) {
+              langEntry = langList[key];
+              break;
+            }
+          }
+          if (langEntry) {
+            app.current.answerResult.languageIndex = codeNum;
+            app.current.answerResult.languageName = langEntry.codeName;
+            reply({ status: 'success', languageIndex: codeNum, languageName: langEntry.codeName });
+          } else {
+            fail('未找到语言 codeNum=' + codeNum);
+          }
+        } else {
+          fail('无法访问 answerResult');
+        }
+      } catch (err) {
+        fail('setLanguage 错误: ' + err.message);
+      }
+    }
+
+    // ========== setCode (代码编辑任务) ==========
+    else if (action === 'setCode') {
+      var code = e.data.code;
+      if (code === undefined || code === null) return fail('缺少 code 参数');
+
+      try {
+        if (app.editors && Object.keys(app.editors).length > 0) {
+          var editorId = app.currentEditorId || Object.keys(app.editors)[0];
+          var editor = app.editors[editorId];
+          if (editor && editor.setValue) {
+            editor.setValue(code);
+            if (editor.dispatch) editor.dispatch({ type: 'changes' });
+            reply({ status: 'success', length: code.length });
+            return;
+          }
+        }
+
+        if (app.editor1Value !== undefined) {
+          app.editor1Value = code;
+          reply({ status: 'success', length: code.length });
+          return;
+        }
+
+        var cmElement = document.querySelector('.CodeMirror');
+        if (cmElement && cmElement.CodeMirror) {
+          cmElement.CodeMirror.setValue(code);
+          reply({ status: 'success', length: code.length });
+          return;
+        }
+
+        fail('找不到代码编辑器实例');
+      } catch (err) {
+        fail('setCode 错误: ' + err.message);
+      }
+    }
+
+    // ========== evaluateCode (代码编辑任务) ==========
+    else if (action === 'evaluateCode') {
+      try {
+        if (typeof app.saveAnswerResult === 'function') {
+          app.saveAnswerResult();
+        }
+
+        setTimeout(function () {
+          if (typeof app.startEvaluationExecute === 'function') {
+            app.startEvaluationExecute();
+          } else if (typeof app.startEvaluate === 'function') {
+            app.startEvaluate();
+          } else {
+            return fail('找不到评估方法');
+          }
+        }, 1000);
+
+        var evalWaited = 0;
+        var evalMax = 180000;
+        var evalPoll = 2000;
+
+        function checkCodeEval() {
+          evalWaited += evalPoll;
+          if (evalWaited > evalMax) return fail('代码评估超时(' + Math.round(evalMax / 1000) + 's)');
+
+          var c = app.current;
+          var s = c.evaluateStatus;
+
+          if (s == 2) {
+            var result = c.evaluateResult || {};
+            var score = result.score || result.totalScore || c.recordScore || '未知';
+            reply({
+              status: 'success',
+              score: score,
+              evaluateResult: result,
+              answerResult: c.answerResult ? {
+                answerResultCode: c.answerResult.answerResultCode,
+                languageName: c.answerResult.languageName,
+              } : null,
+            });
+          } else if (s == -1) {
+            fail('代码评估失败');
+          } else {
+            setTimeout(checkCodeEval, evalPoll);
+          }
+        }
+
+        setTimeout(checkCodeEval, evalPoll + 1000);
+      } catch (err) {
+        fail('evaluateCode 错误: ' + err.message);
+      }
+    }
+
+    // ========== getCodeState (代码编辑任务) ==========
+    else if (action === 'getCodeState') {
+      try {
+        var c = app.current || {};
+        var content = '';
+        if (c.content || c.requirementContent) {
+          var tmp = document.createElement('div');
+          tmp.innerHTML = c.content || c.requirementContent || '';
+          content = tmp.textContent.trim();
+        }
+
+        reply({
+          title: c.title || '',
+          requirement: content || c.requirement || '',
+          type: c.type,
+          codeUuid: c.codeUuid || '',
+          languageIndex: c.answerResult ? c.answerResult.languageIndex : -1,
+          languageName: c.answerResult ? c.answerResult.languageName : '',
+          langList: app.langList || {},
+          recordStatus: c.recordStatus || 0,
+          evaluateStatus: c.evaluateStatus || 0,
+          remainAnswerCount: c.remainAnswerCount,
+          answerScore: c.answerScore,
+          publishSetting: c.publishSetting || {},
+          lastAnswerResult: c.answerResult || null,
+          canStartEvaluate: app.canStartEvaluate,
+        });
+      } catch (err) {
+        fail('getCodeState 错误: ' + err.message);
+      }
+    }
+
     else {
       fail('未知action: ' + action);
     }
