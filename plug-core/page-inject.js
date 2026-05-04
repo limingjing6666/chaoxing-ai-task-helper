@@ -445,7 +445,7 @@
       }
     }
 
-    // ========== evaluateCode (代码编辑任务) ==========
+    // ========== evaluateCode (代码编辑任务 - 只触发，不轮询) ==========
     else if (action === 'evaluateCode') {
       try {
         if (typeof app.saveAnswerResult === 'function') {
@@ -457,42 +457,10 @@
             app.startEvaluationExecute();
           } else if (typeof app.startEvaluate === 'function') {
             app.startEvaluate();
-          } else {
-            return fail('找不到评估方法');
           }
         }, 1000);
 
-        var evalWaited = 0;
-        var evalMax = 180000;
-        var evalPoll = 2000;
-
-        function checkCodeEval() {
-          evalWaited += evalPoll;
-          if (evalWaited > evalMax) return fail('代码评估超时(' + Math.round(evalMax / 1000) + 's)');
-
-          var c = app.current;
-          var s = c.evaluateStatus;
-
-          if (s == 2) {
-            var result = c.evaluateResult || {};
-            var score = result.score || result.totalScore || c.recordScore || '未知';
-            reply({
-              status: 'success',
-              score: score,
-              evaluateResult: result,
-              answerResult: c.answerResult ? {
-                answerResultCode: c.answerResult.answerResultCode,
-                languageName: c.answerResult.languageName,
-              } : null,
-            });
-          } else if (s == -1) {
-            fail('代码评估失败');
-          } else {
-            setTimeout(checkCodeEval, evalPoll);
-          }
-        }
-
-        setTimeout(checkCodeEval, evalPoll + 1000);
+        reply({ status: 'started' });
       } catch (err) {
         fail('evaluateCode 错误: ' + err.message);
       }

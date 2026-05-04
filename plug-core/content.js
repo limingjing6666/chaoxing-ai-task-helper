@@ -1176,8 +1176,38 @@
 
     log('\nEVAL: 提交代码评估...', 'info');
     setProgress(60);
-    var evalResult = await pageCall('evaluateCode');
+    await pageCall('evaluateCode');
     if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+
+    // Poll for evaluation result via getState
+    log('EVAL: 等待评估结果...', 'info');
+    var evalWaited = 0;
+    var evalMax = 180000;
+    var evalPoll = 2000;
+    var evalResult = null;
+
+    while (evalWaited < evalMax) {
+      await sleep(evalPoll);
+      evalWaited += evalPoll;
+      if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+
+      var checkSt = await pageCall('getState');
+      if (checkSt.evaluateStatus == 2) {
+        var result = checkSt.evaluateResult || {};
+        var score = result.score || result.totalScore || checkSt.answerScore || '未知';
+        evalResult = { status: 'success', score: score, evaluateResult: result };
+        log('EVAL: 评估完成，得分: ' + score, 'success');
+        break;
+      } else if (checkSt.evaluateStatus == -1) {
+        throw new Error('代码评估失败');
+      }
+
+      if (evalWaited % 10000 === 0) {
+        log('EVAL: 仍在评估... (' + Math.round(evalWaited / 1000) + 's)', 'info');
+      }
+    }
+
+    if (!evalResult) throw new Error('代码评估超时(' + Math.round(evalMax / 1000) + 's)');
     setProgress(100);
 
     return evalResult;
