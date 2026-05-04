@@ -1069,6 +1069,120 @@
     }
   }
 
+  // ==================== 代码编辑型任务 ====================
+
+  function buildCodePrompt(title, requirement, languageName) {
+    return '你是一名资深软件工程师，正在完成一个编程实践作业。\n\n'
+      + '【任务主题】\n' + title + '\n\n'
+      + '【任务要求】\n' + requirement + '\n\n'
+      + '【编程语言】\n' + (languageName || '根据任务要求自动选择') + '\n\n'
+      + '【要求】\n'
+      + '1. 直接输出完整的可运行代码，不要输出任何解释说明\n'
+      + '2. 代码必须包含必要的注释（中文注释）\n'
+      + '3. 代码必须符合该语言的编码规范\n'
+      + '4. 如果任务要求特定格式（如XML配置文件），严格按照要求的格式输出\n'
+      + '5. 不要使用 markdown 代码块格式（不要 ```），直接输出纯代码\n'
+      + '6. 确保代码语法正确，可以直接运行或编译\n'
+      + '7. 如果任务涉及数据库操作，使用标准 SQL 语法\n'
+      + '8. 如果任务涉及框架配置，遵循该框架的标准配置格式';
+  }
+
+  function inferCodeLanguage(requirement, title, langList) {
+    var text = (requirement + ' ' + title).toLowerCase();
+    var langKeywords = {
+      'Java': ['java', 'spring', 'mybatis', 'hibernate', 'maven', 'gradle', 'servlet', 'jsp'],
+      'Python3.12.12': ['python3', 'python 3', 'django', 'flask', 'pandas', 'numpy'],
+      'Python3.6.9': ['python3.6', 'python 3.6'],
+      'Python2': ['python2', 'python 2'],
+      'C': [' c ', 'clang', 'gcc', 'stdio.h', 'stdlib.h'],
+      'C++': ['c++', 'cpp', 'iostream', 'vector', 'algorithm', 'stl'],
+      'C#': ['c#', 'csharp', '.net', 'asp.net', 'visual studio'],
+      'JavaScript': ['javascript', 'js', 'node', 'react', 'vue', 'angular', 'typescript'],
+      'Golang': ['golang', 'go语言', 'go 语言'],
+      'MySQL': ['mysql', 'sql', '数据库查询', 'select ', 'insert ', 'update ', 'delete '],
+      'HTML': ['html', '网页', '标签'],
+      'CSS': ['css', '样式', '布局'],
+      'Bash': ['bash', 'shell', '脚本'],
+    };
+
+    for (var lang in langKeywords) {
+      var keywords = langKeywords[lang];
+      for (var i = 0; i < keywords.length; i++) {
+        if (text.indexOf(keywords[i]) !== -1) {
+          for (var key in langList) {
+            if (langList[key].codeName === lang) return langList[key];
+          }
+        }
+      }
+    }
+    for (var k in langList) {
+      if (langList[k].codeName === 'Java') return langList[k];
+    }
+    return null;
+  }
+
+  async function runCodeTask(st) {
+    var langList = st.langList || {};
+    var langInfo = inferCodeLanguage(st.requirement, st.title, langList);
+    var langName = langInfo ? langInfo.codeName : 'Java';
+    var langCodeNum = langInfo ? langInfo.codeNum : 3;
+
+    log('LANG: 推断语言 → ' + langName + ' (codeNum=' + langCodeNum + ')', 'info');
+    setProgress(5);
+
+    log('\nGEN: 使用 DeepSeek 生成代码...', 'info');
+    var codePrompt = buildCodePrompt(st.title, st.requirement, langName);
+    if (config.customPrompt) {
+      codePrompt += '\n\n【补充要求】\n' + config.customPrompt;
+    }
+    if (config.retryFeedback) {
+      codePrompt += '\n\n【上次评估反馈 - 请针对性改进】\n' + config.retryFeedback;
+    }
+
+    var codeContent = await bgChat({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      messages: [
+        { role: 'system', content: codePrompt },
+        { role: 'user', content: '请根据任务要求生成完整的代码。' }
+      ],
+      maxTokens: T.DEEPSEEK_DOC_MAX_TOKENS
+    });
+
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+    if (!codeContent || !codeContent.trim()) throw new Error('DeepSeek 返回内容为空');
+
+    codeContent = codeContent.replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim();
+
+    log('GEN: 代码已生成 (' + codeContent.length + ' 字符)', 'success');
+    log('PREVIEW: ' + truncate(codeContent, 120), 'info');
+    setProgress(30);
+
+    log('\nLANG: 设置编程语言 → ' + langName, 'info');
+    var langResult = await pageCall('setLanguage', { codeNum: langCodeNum });
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+    log('LANG: ' + langResult.languageName + ' 已设置', 'success');
+    setProgress(40);
+
+    log('CODE: 填入代码...', 'info');
+    var codeResult = await pageCall('setCode', { code: codeContent });
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+    log('CODE: 代码已填入 (' + codeResult.length + ' 字符)', 'success');
+    setProgress(50);
+
+    await sleep(1500);
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+
+    log('\nEVAL: 提交代码评估...', 'info');
+    setProgress(60);
+    var evalResult = await pageCall('evaluateCode');
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+    setProgress(100);
+
+    return evalResult;
+  }
+
   // ==================== 主流程 ====================
 
   async function continueAutoTask() {
@@ -1091,8 +1205,12 @@
       }
 
       var isFileTask = (st.type === 1);
+      var isCodeTask = (st.type === 4);
       if (isFileTask) {
         throw new Error('文件型任务不支持继续，请重新开始');
+      }
+      if (isCodeTask) {
+        throw new Error('代码型任务不支持继续，请重新开始');
       }
 
       // 计算已完成的对话轮数：页面上学生发言的次数
@@ -1195,8 +1313,11 @@
 
       // 根据任务类型分流
       var isFileTask = (st.type === 1);
+      var isCodeTask = (st.type === 4);
       if (isFileTask) {
         log('TYPE: 📄 文件上传型任务', 'info');
+      } else if (isCodeTask) {
+        log('TYPE: 💻 代码编辑型任务', 'info');
       } else {
         log('TYPE: 💬 对话型任务', 'info');
       }
@@ -1207,6 +1328,9 @@
       if (isFileTask) {
         // ===== 文件上传型任务流程 =====
         await runFileTask(st, detectedType);
+      } else if (isCodeTask) {
+        // ===== 代码编辑型任务流程 =====
+        await runCodeTask(st);
       } else {
         // ===== 对话型任务流程 =====
         await runChatTask(st, detectedType, taskProfile);
