@@ -377,35 +377,30 @@
       if (codeNum === undefined || codeNum === null) return fail('缺少 codeNum 参数');
 
       try {
+        var langList = app.langList || {};
+        var langEntry = null;
+        for (var key in langList) {
+          if (langList[key].codeNum === codeNum) {
+            langEntry = langList[key];
+            break;
+          }
+        }
+        if (!langEntry) return fail('未找到语言 codeNum=' + codeNum);
+
+        // Try app.changeLanguage (may fail if editor not ready)
         if (typeof app.changeLanguage === 'function') {
-          app.changeLanguage(codeNum);
-          setTimeout(function () {
-            var c = app.current;
-            reply({
-              status: 'success',
-              languageIndex: c.answerResult ? c.answerResult.languageIndex : -1,
-              languageName: c.answerResult ? c.answerResult.languageName : '',
-            });
-          }, 500);
-          return;
+          try {
+            app.changeLanguage(codeNum);
+          } catch (e) {
+            // Editor not ready, fall through to direct set
+          }
         }
 
+        // Directly set answerResult (always works)
         if (app.current && app.current.answerResult) {
-          var langList = app.langList || {};
-          var langEntry = null;
-          for (var key in langList) {
-            if (langList[key].codeNum === codeNum) {
-              langEntry = langList[key];
-              break;
-            }
-          }
-          if (langEntry) {
-            app.current.answerResult.languageIndex = codeNum;
-            app.current.answerResult.languageName = langEntry.codeName;
-            reply({ status: 'success', languageIndex: codeNum, languageName: langEntry.codeName });
-          } else {
-            fail('未找到语言 codeNum=' + codeNum);
-          }
+          app.current.answerResult.languageIndex = codeNum;
+          app.current.answerResult.languageName = langEntry.codeName;
+          reply({ status: 'success', languageIndex: codeNum, languageName: langEntry.codeName });
         } else {
           fail('无法访问 answerResult');
         }
