@@ -510,9 +510,6 @@
         .catch(function(err) {
           fail('evaluateCode 网络错误: ' + err.message);
         });
-        }, 1000);
-
-        reply({ status: 'started' });
       } catch (err) {
         fail('evaluateCode 错误: ' + err.message);
       }
