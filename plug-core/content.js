@@ -1359,12 +1359,13 @@
 
       if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
 
+      var evalResult;
       if (isFileTask) {
         // ===== 文件上传型任务流程 =====
         await runFileTask(st, detectedType);
       } else if (isCodeTask) {
         // ===== 代码编辑型任务流程 =====
-        await runCodeTask(st);
+        evalResult = await runCodeTask(st);
       } else {
         // ===== 对话型任务流程 =====
         await runChatTask(st, detectedType, taskProfile);
@@ -1372,17 +1373,20 @@
 
       if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
 
-      // 提交 + 评估
-      log('\nSUBMIT: 提交作答并开始AI评估...', 'info');
-      await sleep(1500);
-      setProgress(85);
+      // 代码任务的评估已在 runCodeTask 中完成，跳过 submitEvaluate
+      if (!isCodeTask) {
+        // 提交 + 评估（对话型和文件型）
+        log('\nSUBMIT: 提交作答并开始AI评估...', 'info');
+        await sleep(1500);
+        setProgress(85);
 
-      const evalResult = await pageCall('submitEvaluate');
-      if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
-      setProgress(100);
+        evalResult = await pageCall('submitEvaluate');
+        if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+        setProgress(100);
+      }
 
       lastFeedback = null;
-      if (evalResult.status === 'success') {
+      if (evalResult && evalResult.status === 'success') {
         log('\nDONE: 评估完成。最终得分: ' + evalResult.score, 'success');
         setStatus('DONE · ' + evalResult.score, 'done');
         toast('任务完成 · 得分 ' + evalResult.score, 'success');
@@ -1397,12 +1401,14 @@
           }
         }
         // 记录执行历史
-        saveHistory({ title: st.title, score: evalResult.score, type: detectedType, rounds: isFileTask ? 0 : config.rounds, taskMode: isFileTask ? 'file' : 'chat' });
+        var taskMode = isCodeTask ? 'code' : (isFileTask ? 'file' : 'chat');
+        saveHistory({ title: st.title, score: evalResult.score, type: detectedType, rounds: isCodeTask ? 0 : (isFileTask ? 0 : config.rounds), taskMode: taskMode });
       } else {
         log('⚠ 评估结果: ' + JSON.stringify(evalResult), 'warn');
         setStatus('EVAL_ERR', 'error');
         toast('评估失败', 'error');
-        saveHistory({ title: st.title, score: 'ERR', type: detectedType, rounds: isFileTask ? 0 : config.rounds, taskMode: isFileTask ? 'file' : 'chat' });
+        var taskMode2 = isCodeTask ? 'code' : (isFileTask ? 'file' : 'chat');
+        saveHistory({ title: st.title, score: 'ERR', type: detectedType, rounds: isCodeTask ? 0 : (isFileTask ? 0 : config.rounds), taskMode: taskMode2 });
       }
 
     } catch (err) {
