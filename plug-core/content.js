@@ -1198,7 +1198,12 @@
       var checkSt = await pageCall('getState');
       if (checkSt.evaluateStatus == 2) {
         var result = checkSt.evaluateResult || {};
-        var score = result.score || result.totalScore || checkSt.answerScore || '未知';
+        // score 可能是数字或 {score: N} 对象
+        var score = (result.score && typeof result.score === 'object' ? result.score.score : result.score)
+          || result.totalScore
+          || checkSt.recordScore
+          || checkSt.answerScore
+          || '未知';
         evalResult = { status: 'success', score: score, evaluateResult: result };
         log('EVAL: 评估完成，得分: ' + score, 'success');
         break;

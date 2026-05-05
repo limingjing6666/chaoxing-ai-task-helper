@@ -72,6 +72,8 @@
           stateData.langList = app.langList || {};
           stateData.publishSetting = c.publishSetting || {};
           stateData.answerResult = c.answerResult || null;
+          stateData.evaluateResult = c.evaluateResult || null;
+          stateData.recordScore = c.recordScore;
         }
 
         reply(stateData);
