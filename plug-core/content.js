@@ -1222,6 +1222,114 @@
     return evalResult;
   }
 
+  // ==================== AI思维阶梯任务 ====================
+
+  var LADDER_STATE_KEY = 'cxai_ladder_state';
+
+  function buildThinkLadderPrompt(question, requirement) {
+    var optionsText = question.options.map(function(o) {
+      return o.option + '. ' + o.optionContent;
+    }).join('\n');
+
+    return '请直接输出答案字母（如A或AC），不要输出任何其他内容。\n\n'
+      + '题目：' + question.stem + '\n\n'
+      + '选项：\n' + optionsText + '\n'
+      + '提示：' + question.knowledgePoint + ' - ' + question.type;
+  }
+
+  async function runThinkLadderTask(st) {
+    var state = await pageCall('getThinkLadderState');
+    log('TASK: AI思维阶梯', 'info');
+
+    if (!state.currentQuestion || !state.currentQuestion.stem) {
+      log('DONE: 没有待答题目，任务完成', 'success');
+      return { status: 'success', score: '✓' };
+    }
+
+    var question = state.currentQuestion;
+    setProgress(10);
+
+    log('\n── [' + question.type + '] ──', 'info');
+    log('DIMENSION: ' + question.dimension, 'info');
+    log('TOPIC: ' + question.knowledgePoint, 'info');
+    log('STEM: ' + truncate(question.stem, 80), 'info');
+
+    // 使用DeepSeek分析
+    log('AI: DeepSeek 分析中...', 'info');
+    var aiAnswer = await bgChat({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      messages: [
+        { role: 'system', content: buildThinkLadderPrompt(question, st.requirement) },
+        { role: 'user', content: '正确答案是？' }
+      ],
+      maxTokens: 200
+    });
+
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+
+    // 重试空回复
+    if (!aiAnswer || !aiAnswer.trim()) {
+      log('⚠ DeepSeek 返回空，重试...', 'warn');
+      aiAnswer = await bgChat({
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        messages: [
+          { role: 'system', content: buildThinkLadderPrompt(question, st.requirement) },
+          { role: 'user', content: '直接给答案字母' }
+        ],
+        maxTokens: 50
+      });
+    }
+
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+
+    var answer = aiAnswer ? aiAnswer.trim().match(/^[A-E]+/) : null;
+    var finalAnswer = answer ? answer[0] : 'A';
+    log('ANSWER: ' + finalAnswer, 'success');
+    setProgress(40);
+
+    // 通过sendMessage发送答案
+    log('SEND: 提交答案...', 'action');
+    var sendResult = await pageCall('sendThinkLadderAnswer', { answer: finalAnswer });
+    if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
+
+    setProgress(80);
+
+    if (sendResult && sendResult.status === 'success') {
+      if (sendResult.isCorrect) log('✓ 回答正确！', 'success');
+      else if (sendResult.isWrong) log('✗ 回答错误', 'warn');
+    }
+
+    setProgress(100);
+
+    // 保存状态，页面刷新后自动继续
+    var saveObj = {}; saveObj[LADDER_STATE_KEY] = { count: 1 };
+    chrome.storage.local.set(saveObj);
+
+    return { status: 'success', score: '✓' };
+  }
+
+  function checkThinkLadderAutoStart() {
+    chrome.storage.local.get([LADDER_STATE_KEY], function(r) {
+      var state = r[LADDER_STATE_KEY];
+      if (!state || !state.count) return;
+
+      // 清除状态
+      var o = {}; o[LADDER_STATE_KEY] = null;
+      chrome.storage.local.set(o);
+
+      log('LADDER: 自动继续下一题...', 'info');
+      setTimeout(function() {
+        if (!isRunning) {
+          runTaskWithRetry();
+        }
+      }, T.RUN_RETRY_AUTO_DELAY);
+    });
+  }
+
   // ==================== 主流程 ====================
 
   async function continueAutoTask() {
@@ -1245,11 +1353,15 @@
 
       var isFileTask = (st.type === 1);
       var isCodeTask = (st.type === 4);
+      var isThinkLadderTask = (st.type === 2);
       if (isFileTask) {
         throw new Error('文件型任务不支持继续，请重新开始');
       }
       if (isCodeTask) {
         throw new Error('代码型任务不支持继续，请重新开始');
+      }
+      if (isThinkLadderTask) {
+        throw new Error('思维阶梯任务不支持继续，请重新开始');
       }
 
       // 计算已完成的对话轮数：页面上学生发言的次数
@@ -1353,10 +1465,13 @@
       // 根据任务类型分流
       var isFileTask = (st.type === 1);
       var isCodeTask = (st.type === 4);
+      var isThinkLadderTask = (st.type === 2);
       if (isFileTask) {
         log('TYPE: 📄 文件上传型任务', 'info');
       } else if (isCodeTask) {
         log('TYPE: 💻 代码编辑型任务', 'info');
+      } else if (isThinkLadderTask) {
+        log('TYPE: 🧠 AI思维阶梯任务', 'info');
       } else {
         log('TYPE: 💬 对话型任务', 'info');
       }
@@ -1371,6 +1486,9 @@
       } else if (isCodeTask) {
         // ===== 代码编辑型任务流程 =====
         evalResult = await runCodeTask(st);
+      } else if (isThinkLadderTask) {
+        // ===== AI思维阶梯任务流程 =====
+        evalResult = await runThinkLadderTask(st);
       } else {
         // ===== 对话型任务流程 =====
         await runChatTask(st, detectedType, taskProfile);
@@ -1378,8 +1496,8 @@
 
       if (!isRunning) { log('⚠ 已停止', 'warn'); return; }
 
-      // 代码任务的评估已在 runCodeTask 中完成，跳过 submitEvaluate
-      if (!isCodeTask) {
+      // 代码任务和思维阶梯的评估已在各自函数中完成，跳过 submitEvaluate
+      if (!isCodeTask && !isThinkLadderTask) {
         // 提交 + 评估（对话型和文件型）
         log('\nSUBMIT: 提交作答并开始AI评估...', 'info');
         await sleep(1500);
@@ -2007,6 +2125,7 @@
       var tag = '';
       if (t.taskMode === 'discuss') tag += '<span class="cxai-batch-item-tag" style="margin-right:6px;background:#eef6ff;color:#2b7de9;">💬 讨论</span>';
       else if (t.taskMode === 'code') tag += '<span class="cxai-batch-item-tag" style="margin-right:6px;background:#f0fff4;color:#22543d;">💻 代码</span>';
+      else if (t.taskMode === 'ladder') tag += '<span class="cxai-batch-item-tag" style="margin-right:6px;background:#fffbeb;color:#92400e;">🧠 阶梯</span>';
       else tag += '<span class="cxai-batch-item-tag" style="margin-right:6px;background:#f3f0ff;color:#6c63ff;">🤖 AI</span>';
       if (t.isFinish === true) tag = '<span class="cxai-batch-item-tag done">✓ 已完成</span>';
       else if (t.isFinish === false) tag = '<span class="cxai-batch-item-tag pending">○ 未完成</span>';
@@ -2497,10 +2616,12 @@
         setTimeout(checkBatchAutoStart, T.RUN_RETRY_AUTO_DELAY);
       } else {
         setTimeout(loadTaskInfo, 2000);
-        // 检查是否有待恢复的重试或批量任务
+        // 检查是否有待恢复的重试、批量或思维阶梯任务
         setTimeout(function () {
-          chrome.storage.local.get([K.RETRY_STATE], function (r) {
-            if (r[K.RETRY_STATE] && r[K.RETRY_STATE].targetScore) {
+          chrome.storage.local.get([K.RETRY_STATE, LADDER_STATE_KEY], function (r) {
+            if (r[LADDER_STATE_KEY] && r[LADDER_STATE_KEY].count) {
+              checkThinkLadderAutoStart();
+            } else if (r[K.RETRY_STATE] && r[K.RETRY_STATE].targetScore) {
               checkRetryAutoStart();
             } else {
               checkBatchAutoStart();

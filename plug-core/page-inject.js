@@ -15,7 +15,9 @@
 
   function getApp() {
     var el = document.getElementById('app');
-    return el && el.__vue__;
+    if (el && el.__vue__) return el.__vue__;
+    var el2 = document.getElementById('mainApp');
+    return el2 && el2.__vue__;
   }
 
   window.addEventListener('message', function (e) {
@@ -371,6 +373,137 @@
       console.log('[ChaoxingAI] retryTask: 无法获取UUID，尝试刷新页面');
       reply({ success: true, method: 'reload' });
       setTimeout(function () { window.location.reload(); }, 100);
+    }
+
+    // ========== getThinkLadderState (AI思维阶梯任务) ==========
+    else if (action === 'getThinkLadderState') {
+      try {
+        var c = app.current || {};
+        var messages = c.messageList || [];
+
+        // 解析当前题目（从messageList最后一条AI消息）
+        var currentQuestion = null;
+        for (var i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 2 && messages[i].content) {
+            try {
+              var qData = JSON.parse(messages[i].content);
+              if (qData.questionStem) {
+                currentQuestion = {
+                  stem: qData.questionStem,
+                  options: JSON.parse(qData.questionOptions || '[]'),
+                  type: qData.questionType || '',
+                  dimension: qData.dimension || '',
+                  knowledgePoint: qData.knowledgePoint || '',
+                };
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+
+        reply({
+          title: c.title || '',
+          type: c.type,
+          thinkLadderType: c.thinkLadderType,
+          requirement: c.requirement || '',
+          recordUuid: c.recordUuid || '',
+          recordStatus: c.recordStatus || 0,
+          evaluateStatus: c.evaluateStatus || 0,
+          remainAnswerCount: c.remainAnswerCount,
+          answerScore: c.answerScore,
+          currentQuestion: currentQuestion,
+          messageCount: messages.length,
+          answerRecords: c.answerRecords || [],
+          allTopicIds: c.allTopicIds || '',
+          tipNum: c.tipNum,
+        });
+      } catch (err) {
+        fail('getThinkLadderState 错误: ' + err.message);
+      }
+    }
+
+    // ========== sendThinkLadderAnswer (AI思维阶梯任务 - 用sendMessage) ==========
+    else if (action === 'sendThinkLadderAnswer') {
+      var answer = e.data.answer;
+      if (!answer) return fail('缺少 answer 参数');
+
+      try {
+        var c = app.current;
+
+        // 关键：主干生长模式下recordUuid可能为空，从answerRecords复用
+        if (!c.recordUuid && c.answerRecords && c.answerRecords.length > 0) {
+          c.recordUuid = c.answerRecords[c.answerRecords.length - 1].recordUuid;
+          console.log('[ChaoxingAI] 复用recordUuid:', c.recordUuid);
+        }
+
+        if (typeof app.sendMessage === 'function') {
+          app.sendMessage(answer);
+        } else if (typeof app.send === 'function') {
+          app.send(answer);
+        } else {
+          return fail('找不到发送方法');
+        }
+
+        // 等待AI回复
+        var waited = 0;
+        var maxWait = 60000;
+        var poll = 500;
+
+        function waitReply() {
+          waited += poll;
+          if (waited > maxWait) return fail('等待AI回复超时');
+
+          if (c.isLoadingChat) {
+            return setTimeout(waitReply, poll);
+          }
+
+          // AI回复完成，检查结果
+          var newMessages = c.messageList || [];
+          if (newMessages.length > (c._lastMsgCount || 0)) {
+            c._lastMsgCount = newMessages.length;
+            var lastMsg = newMessages[newMessages.length - 1];
+            var isCorrect = lastMsg.content && lastMsg.content.indexOf('回答正确') !== -1;
+            var isWrong = lastMsg.content && lastMsg.content.indexOf('回答错误') !== -1;
+
+            reply({ status: 'success', isCorrect: isCorrect, isWrong: isWrong });
+            return;
+          }
+
+          // 如果还在loading就继续等
+          if (c.isLoadingChat) {
+            return setTimeout(waitReply, poll);
+          }
+
+          // 不确定状态，再等一会
+          if (waited < 5000) {
+            return setTimeout(waitReply, poll);
+          }
+
+          reply({ status: 'success' });
+        }
+
+        c._lastMsgCount = (c.messageList || []).length;
+        setTimeout(waitReply, 3000);
+      } catch (err) {
+        fail('sendThinkLadderAnswer 错误: ' + err.message);
+      }
+    }
+
+    // ========== endThinkLadderTask (AI思维阶梯任务) ==========
+    else if (action === 'endThinkLadderTask') {
+      try {
+        if (typeof app.endTask === 'function') {
+          app.endTask();
+          reply({ status: 'success' });
+        } else if (typeof app.submit === 'function') {
+          app.submit();
+          reply({ status: 'success' });
+        } else {
+          fail('找不到结束任务方法');
+        }
+      } catch (err) {
+        fail('endThinkLadderTask 错误: ' + err.message);
+      }
     }
 
     // ========== setLanguage (代码编辑任务 - 点击UI选择器) ==========

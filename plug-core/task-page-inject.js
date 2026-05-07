@@ -203,6 +203,17 @@
                 taskMode: 'code'
               });
             }
+            // AI思维阶梯 (activeType=2)
+            else if (aType === 2) {
+              var itemUrl2 = extractTaskUrlFromItem(item);
+              if (!itemUrl2) return;
+              pushTask(tasks, {
+                name: item.name || item.title || item.nameOne || '未命名思维阶梯',
+                url: itemUrl2,
+                source: 'vue-' + key,
+                taskMode: 'ladder'
+              });
+            }
           });
         });
       }
