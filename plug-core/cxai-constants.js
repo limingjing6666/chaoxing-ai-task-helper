@@ -49,8 +49,8 @@
 
   // DeepSeek 模型定价 (元/1M token, 参考官网)
   var PRICING = {
-    'deepseek-chat':     { input: 2.0, output: 8.0 },   // V3: ￥2/1M 输入, ￥8/1M 输出
-    'deepseek-reasoner': { input: 4.0, output: 16.0 },  // R1: ￥4/1M 输入, ￥16/1M 输出
+    'deepseek-v4-flash': { input: 1.0, output: 2.0 },   // V4 Flash: ￥1/1M 输入, ￥2/1M 输出
+    'deepseek-v4-pro':   { input: 3.0, output: 6.0 },   // V4 Pro: ￥3/1M 输入, ￥6/1M 输出 (2.5折优惠)
   };
 
   // 导出到 window（content script 隔离 world 内共享）

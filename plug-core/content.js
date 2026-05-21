@@ -17,15 +17,15 @@
   };
   var L = _CONST.LIMITS || { MAX_HISTORY: 50, MAX_RETRY_ATTEMPTS: 10, SCAN_CACHE_TTL: 3600000 };
   var PRICING = _CONST.PRICING || {
-    'deepseek-chat':     { input: 2.0, output: 8.0 },
-    'deepseek-reasoner': { input: 4.0, output: 16.0 }
+    'deepseek-v4-flash': { input: 1.0, output: 2.0 },
+    'deepseek-v4-pro':   { input: 3.0, output: 6.0 }
   };
 
   // ==================== 配置 ====================
   const DEFAULT_CONFIG = {
     apiKey: '',
     baseUrl: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     rounds: 5,
     delay: 3,
     customPrompt: '',
@@ -241,7 +241,7 @@
   function recordUsage(model, usage) {
     var inputT = usage.prompt_tokens || 0;
     var outputT = usage.completion_tokens || 0;
-    var p = PRICING[model] || PRICING['deepseek-chat'];
+    var p = PRICING[model] || PRICING['deepseek-v4-flash'];
     var cost = (inputT / 1e6) * p.input + (outputT / 1e6) * p.output;
 
     sessionUsage.input += inputT;
@@ -2373,7 +2373,7 @@
       + '<div class="cxai-field"><label>API Key</label><div class="cxai-input-with-eye"><input type="password" id="cxai-apikey" placeholder="sk-..." /><button type="button" class="cxai-eye-btn" id="cxai-eye-btn" title="显示/隐藏">👁</button></div></div>'
       + '<div class="cxai-field"><label>接口地址</label><input type="text" id="cxai-baseurl" placeholder="https://api.deepseek.com" /></div>'
       + '<div class="cxai-row cxai-row-3">'
-      + '<div class="cxai-field"><label>模型</label><select id="cxai-model" style="width:100%;padding:8px 10px;background:#f7f7f8;border:1px solid #ddd;border-radius:6px;color:#1a1a1a;font-family:inherit;font-size:12px;outline:none;box-sizing:border-box;cursor:pointer;"><option value="deepseek-chat">deepseek-chat</option><option value="deepseek-reasoner">deepseek-reasoner</option></select></div>'
+      + '<div class="cxai-field"><label>模型</label><select id="cxai-model" style="width:100%;padding:8px 10px;background:#f7f7f8;border:1px solid #ddd;border-radius:6px;color:#1a1a1a;font-family:inherit;font-size:12px;outline:none;box-sizing:border-box;cursor:pointer;"><option value="deepseek-v4-flash">deepseek-v4-flash</option><option value="deepseek-v4-pro">deepseek-v4-pro</option></select></div>'
       + '<div class="cxai-field"><label>轮数</label><input type="number" id="cxai-rounds" min="1" max="20" value="5" /></div>'
       + '<div class="cxai-field"><label>间隔(s)</label><input type="number" id="cxai-delay" min="0" max="30" value="3" /></div>'
       + '</div>'
