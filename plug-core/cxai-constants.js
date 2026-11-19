@@ -7,7 +7,7 @@
   // 超时毫秒 —— 顶层只允许 content/background 使用
   var TIMEOUTS = {
     PAGE_CALL: 120000,        // window.postMessage 调用超时
-    CHAT_RESPONSE: 90000,     // AI 老师回复等待
+    CHAT_RESPONSE: 120000,    // AI 老师回复等待（新架构流式 SSE，加缓冲）
     EVALUATE: 180000,         // 评估结果轮询总时长
     EVAL_POLL: 2000,          // 评估轮询间隔
     FILE_UPLOAD: 120000,      // 文件上传 + 解析等待
@@ -36,8 +36,10 @@
     BATCH_TOTAL: 'cxai_batch_total',
     BATCH_TASKS: 'cxai_batch_tasks',
     BATCH_FAILED: 'cxai_batch_failed',   // 批量中失败的 url 列表
-    SCAN_CACHE: 'cxai_scan_cache',       // 扫描结果缓存 { url, tasks, time }
+    SCAN_CACHE: 'cxai_scan_cache',       // 扫描结果缓存 { url, courseKey, tasks, time }
     STATS: 'cxai_stats',                 // token 使用统计
+    UI_STATE: 'cxai_ui_state',           // 面板展开状态与拖拽位置
+    BATCH_AUTO_AI: 'cxai_batch_auto_ai', // 批量执行时 AI 实践页自动开始开关
   };
 
   // 最大历史记录条数
@@ -47,10 +49,18 @@
     SCAN_CACHE_TTL: 3600000, // 1小时
   };
 
-  // DeepSeek 模型定价 (元/1M token, 参考官网)
+  // DeepSeek 模型定价 (元/1M token, 官方 2026-11 阶梯定价; 空闲时段为高峰价的 50%)
+  // 高峰时段(北京时间): 周一至周五 09:00-12:00, 14:00-18:00
   var PRICING = {
-    'deepseek-v4-flash': { input: 1.0, output: 2.0 },   // V4 Flash: ￥1/1M 输入, ￥2/1M 输出
-    'deepseek-v4-pro':   { input: 3.0, output: 6.0 },   // V4 Pro: ￥3/1M 输入, ￥6/1M 输出 (2.5折优惠)
+    'deepseek-flash':  { cacheHit: 0.04, cacheMiss: 2.0, output: 8.0 },
+    'deepseek-v4-pro': { cacheHit: 0.30, cacheMiss: 9.0, output: 27.0 },
+  };
+
+  // 旧版模型名 -> 新版官方模型 ID 迁移映射
+  var MODEL_ALIASES = {
+    'deepseek-v4-flash': 'deepseek-flash',
+    'deepseek-chat':     'deepseek-flash',
+    'deepseek-reasoner': 'deepseek-v4-pro',
   };
 
   // 导出到 window（content script 隔离 world 内共享）
@@ -59,5 +69,6 @@
     STORAGE_KEYS: STORAGE_KEYS,
     LIMITS: LIMITS,
     PRICING: PRICING,
+    MODEL_ALIASES: MODEL_ALIASES,
   };
 })();

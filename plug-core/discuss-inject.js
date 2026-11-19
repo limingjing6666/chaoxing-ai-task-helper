@@ -47,9 +47,15 @@
           }
         }
 
-        // 方式3: DOM - groupweb 话题详情区域
+        // 方式3: DOM - groupweb v3/旧版话题详情区域
+        if (!topicTitle) {
+          var v3Title = document.querySelector('#bbsTopicDetail .topicDetail_title > span, #bbsTopicDetail .topicDetail_title, .topicDetail_title');
+          if (v3Title && v3Title.textContent.trim()) {
+            topicTitle = v3Title.textContent.trim();
+          }
+        }
         if (!topicContent) {
-          var topicEls = document.querySelectorAll('#bbsTopicDetail, .noticeDetail_detail, .topic-content, .topicContent, .bbs-content, .detail-content');
+          var topicEls = document.querySelectorAll('#bbsTopicDetail .topicDetail_main .richText, #bbsTopicDetail .topicDetail_main, #bbsTopicDetail, .noticeDetail_detail, .topic-content, .topicContent, .bbs-content, .detail-content');
           for (var i = 0; i < topicEls.length; i++) {
             var text = topicEls[i].textContent.trim();
             if (text.length > 10) { topicContent = text; break; }
@@ -69,8 +75,8 @@
           topicTitle = document.title.replace(/\s*[-–—|].*/g, '').trim() || '主题讨论';
         }
 
-        // 检查回复输入框
-        var replyBox = document.querySelector('.replyEdit textarea, textarea[placeholder*="回复"], .ql-editor, textarea');
+        // 检查回复输入框（兼容 groupweb v3 .textareawrap textarea 与旧版 .replyEdit textarea）
+        var replyBox = document.querySelector('.textareawrap > textarea, .replyEdit textarea, textarea[placeholder*="回复"], .ql-editor, textarea');
         var canReply = !!replyBox;
 
         reply({
@@ -90,20 +96,25 @@
       if (!replyText.trim()) return fail('回复内容不能为空');
 
       try {
-        // 查找回复文本框 - groupweb 页面用 .replyEdit textarea
-        var textarea = document.querySelector('.replyEdit textarea, textarea[placeholder*="回复"], textarea.reply-textarea, textarea.replyContent, #replyContent, .reply-box textarea, textarea');
+        // 查找回复文本框 - 兼容 groupweb v3 (.textareawrap textarea) 与旧版 (.replyEdit textarea)
+        var textarea = document.querySelector('.textareawrap > textarea, .replyEdit textarea, textarea[placeholder*="回复"], textarea.reply-textarea, textarea.replyContent, #replyContent, .reply-box textarea, textarea');
         var qlEditor = document.querySelector('.ql-editor');
 
         if (qlEditor) {
           qlEditor.innerHTML = '<p>' + replyText.replace(/\n/g, '</p><p>') + '</p>';
           qlEditor.dispatchEvent(new Event('input', { bubbles: true }));
         } else if (textarea) {
-          // 先聚焦让编辑器激活
+          // 先聚焦让编辑器激活，再用原生 setter 设值
           textarea.focus();
-          textarea.value = replyText;
-          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+          if (setter && setter.set) {
+            setter.set.call(textarea, replyText);
+          } else {
+            textarea.value = replyText;
+          }
+          textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: replyText, inputType: 'insertText' }));
           textarea.dispatchEvent(new Event('change', { bubbles: true }));
-          // 触发 keyup 以便 autoheight 等脚本响应
+          // 触发 keyup 以便 autoheight / 字数统计等脚本响应
           textarea.dispatchEvent(new Event('keyup', { bubbles: true }));
 
           if (textarea.__vue__) {

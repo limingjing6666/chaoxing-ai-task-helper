@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "超星AI助手",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "超星学习通 AI 实践与主题讨论自动完成助手，支持批量执行、自动重试与评估反馈驱动优化",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
@@ -15,14 +15,18 @@
     {
       "matches": [
         "*://mooc2-ans.chaoxing.com/ai-evaluate/*",
-        "*://mooc2-ans.chaoxing.com/mooc2-ans/ai-evaluate/*"
+        "*://mooc2-ans.chaoxing.com/mooc2-ans/ai-evaluate/*",
+        "*://mooc2-ans.chaoxing.com/mooc2-ans-vue/situationalDialogue*"
       ],
       "js": ["page-inject.js"],
       "run_at": "document_idle",
       "world": "MAIN"
     },
     {
-      "matches": ["*://mobilelearn.chaoxing.com/page/active/stuActiveList*"],
+      "matches": [
+        "*://mobilelearn.chaoxing.com/page/active/stuActiveList*",
+        "*://mooc2-ans.chaoxing.com/mooc2-ans-vue/fanyav3/studentCourse*"
+      ],
       "js": ["task-page-inject.js"],
       "run_at": "document_idle",
       "world": "MAIN",
