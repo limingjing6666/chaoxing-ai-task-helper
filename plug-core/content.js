@@ -8,15 +8,15 @@
     HISTORY: 'cxai_history', RETRY_STATE: 'cxai_retry_state',
     BATCH_QUEUE: 'cxai_batch_queue', BATCH_AUTO: 'cxai_batch_auto',
     BATCH_TOTAL: 'cxai_batch_total', BATCH_TASKS: 'cxai_batch_tasks',
-    BATCH_FAILED: 'cxai_batch_failed', SCAN_CACHE: 'cxai_scan_cache', STATS: 'cxai_stats',
-    UI_STATE: 'cxai_ui_state', BATCH_AUTO_AI: 'cxai_batch_auto_ai'
+    BATCH_FAILED: 'cxai_batch_failed', SCAN_CACHE: 'cxai_scan_cache', MODEL_CACHE: 'cxai_model_cache',
+    STATS: 'cxai_stats', UI_STATE: 'cxai_ui_state', BATCH_AUTO_AI: 'cxai_batch_auto_ai'
   };
   var T = _CONST.TIMEOUTS || {
     PAGE_CALL: 120000, DEEPSEEK_DEFAULT_MAX_TOKENS: 1200, DEEPSEEK_DOC_MAX_TOKENS: 4000,
     RETRY_DELAY: 3000, EMPTY_REPLY_RETRY: 3000, SUBMIT_WAIT: 3000, RUN_RETRY_AUTO_DELAY: 4000,
     FILE_PARSE: 60000
   };
-  var L = _CONST.LIMITS || { MAX_HISTORY: 50, MAX_RETRY_ATTEMPTS: 10, SCAN_CACHE_TTL: 3600000 };
+  var L = _CONST.LIMITS || { MAX_HISTORY: 50, MAX_RETRY_ATTEMPTS: 10, SCAN_CACHE_TTL: 3600000, MODEL_CACHE_TTL: 21600000 };
   var PRICING = _CONST.PRICING || {
     'deepseek-flash':  { cacheHit: 0.04, cacheMiss: 2.0, output: 8.0 },
     'deepseek-v4-pro': { cacheHit: 0.30, cacheMiss: 9.0, output: 27.0 }
@@ -26,10 +26,22 @@
     'deepseek-chat':     'deepseek-flash',
     'deepseek-reasoner': 'deepseek-v4-pro'
   };
+  var DEFAULT_MODELS = _CONST.DEFAULT_MODELS || [
+    { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', effortLevels: ['low', 'high', 'max'] },
+    { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', effortLevels: ['low', 'high', 'max'] }
+  ];
+  let availableModels = DEFAULT_MODELS.slice();
+  let _isFetchingModels = false;
+  let _lastModelSyncSig = '';
+  let _modelSyncTimer = null;
 
-  function normalizeModelId(model) {
+  function normalizeModelId(model, baseUrl) {
     var m = String(model || 'deepseek-flash').trim();
-    return MODEL_ALIASES[m] || m;
+    if (availableModels.some(function (item) { return item && item.id === m; })) {
+      return m;
+    }
+    var isOfficial = !baseUrl || /api\.deepseek\.com/i.test(String(baseUrl));
+    return isOfficial ? (MODEL_ALIASES[m] || m) : m;
   }
 
   // ==================== 配置 ====================
@@ -141,7 +153,8 @@
       target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>',
       award: '<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/>',
       image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
-      bulb: '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8a6 6 0 0 0-12 0c0 1.33.47 2.48 1.5 3.5.76.76 1.23 1.52 1.41 2.5"/>'
+      bulb: '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8a6 6 0 0 0-12 0c0 1.33.47 2.48 1.5 3.5.76.76 1.23 1.52 1.41 2.5"/>',
+      refresh: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>'
     };
     var body = map[name] || '';
     return '<span class="cxai-svg"><svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg></span>';
@@ -422,7 +435,7 @@
       ? usage.prompt_cache_miss_tokens
       : Math.max(0, inputT - cacheHitT);
 
-    var resolved = normalizeModelId(model);
+    var resolved = normalizeModelId(model, config.baseUrl);
     var p = PRICING[resolved] || PRICING['deepseek-flash'];
     var mult = getDeepSeekPeakMultiplier();
     var cost = ((cacheHitT / 1e6) * p.cacheHit + (cacheMissT / 1e6) * p.cacheMiss + (outputT / 1e6) * p.output) * mult;
@@ -977,6 +990,7 @@
       if (resp && resp.success) {
         log('✓ ' + resp.data, 'success');
         toast('连接成功', 'success');
+        refreshModelsList({ silent: true, force: true });
       } else {
         var errMsg = resp ? resp.error : '未知错误';
         log('❌ ' + errMsg, 'error');
@@ -2421,7 +2435,7 @@
 
   function migrateConfigFields(cfg) {
     var out = { ...DEFAULT_CONFIG, ...cfg };
-    if (out.model) out.model = normalizeModelId(out.model);
+    if (out.model) out.model = normalizeModelId(out.model, out.baseUrl);
     if (!out.thinkingMode) out.thinkingMode = 'none';
     return out;
   }
@@ -2466,6 +2480,7 @@
     persistProfiles();
     fillConfigUI();
     renderProfileList();
+    refreshModelsList({ silent: true, force: false });
     toast('已切换到: ' + name, 'info');
   }
 
@@ -2520,10 +2535,169 @@
     badge._t = setTimeout(function () { badge.classList.remove('cxai-show'); }, 1800);
   }
 
+  function hashStringQuick(str) {
+    var h = 5381;
+    var s = String(str || '');
+    for (var i = 0; i < s.length; i++) {
+      h = ((h << 5) + h) + s.charCodeAt(i);
+      h = h | 0;
+    }
+    return String(h >>> 0);
+  }
+
+  function getModelCacheKey(apiKey, baseUrl) {
+    var b = String(baseUrl || DEFAULT_CONFIG.baseUrl).trim().replace(/\/+$/, '');
+    var k = String(apiKey || '').trim();
+    return b + '|' + hashStringQuick(k);
+  }
+
+  function renderThinkingModeOptions(modelId, selectedMode) {
+    if (!panelEl) return;
+    var tmEl = panelEl.querySelector('#cxai-thinking-mode');
+    if (!tmEl) return;
+    var resolved = normalizeModelId(modelId, config.baseUrl);
+    var meta = availableModels.find(function (m) { return m && m.id === resolved; });
+    var rawLevels = (meta && Array.isArray(meta.effortLevels) && meta.effortLevels.length > 0)
+      ? meta.effortLevels
+      : ['low', 'high'];
+    var levelLabels = {
+      low: '低强度思考 (low)',
+      medium: '中强度思考 (medium)',
+      high: '高强度思考 (high)',
+      max: '极限思考 (max)'
+    };
+    var opts = '<option value="none">关闭（快速直出 · 推荐）</option>';
+    var validSet = { none: true };
+    rawLevels.forEach(function (lv) {
+      var k = String(lv || '').trim().toLowerCase();
+      if (!k || k === 'none' || k === 'disabled' || validSet[k]) return;
+      validSet[k] = true;
+      opts += '<option value="' + escHtml(k) + '">' + escHtml(levelLabels[k] || ('深度思考 (' + k + ')')) + '</option>';
+    });
+    var want = String(selectedMode || 'none').toLowerCase();
+    if (want && want !== 'none' && !validSet[want]) {
+      validSet[want] = true;
+      opts += '<option value="' + escHtml(want) + '">' + escHtml(levelLabels[want] || ('深度思考 (' + want + ')')) + '</option>';
+    }
+    tmEl.innerHTML = opts;
+    tmEl.value = validSet[want] ? want : 'none';
+  }
+
+  function renderModelOptions(selectedModel) {
+    if (!panelEl) return;
+    var sel = panelEl.querySelector('#cxai-model');
+    if (!sel) return;
+    var list = (Array.isArray(availableModels) && availableModels.length > 0) ? availableModels : DEFAULT_MODELS;
+    var target = normalizeModelId(selectedModel || config.model || DEFAULT_CONFIG.model, config.baseUrl);
+    var seen = {};
+    var html = '';
+    list.forEach(function (m) {
+      if (!m || !m.id || seen[m.id]) return;
+      seen[m.id] = true;
+      var shortName = m.name ? m.name.replace(/^DeepSeek-/i, '') : '';
+      var label = (shortName && shortName.toLowerCase() !== m.id.toLowerCase()) ? (m.id + ' (' + shortName + ')') : m.id;
+      html += '<option value="' + escHtml(m.id) + '" title="' + escHtml(m.name || m.id) + '">' + escHtml(label) + '</option>';
+    });
+    if (target && !seen[target]) {
+      html += '<option value="' + escHtml(target) + '">' + escHtml(target) + ' (当前配置)</option>';
+    }
+    sel.innerHTML = html;
+    sel.value = target;
+    var tmEl = panelEl.querySelector('#cxai-thinking-mode');
+    renderThinkingModeOptions(target, tmEl ? tmEl.value : config.thinkingMode);
+  }
+
+  function setModelsRefreshLoading(loading) {
+    if (!panelEl) return;
+    var btn = panelEl.querySelector('#cxai-btn-refresh-models');
+    if (!btn) return;
+    btn.disabled = !!loading;
+    btn.classList.toggle('is-spinning', !!loading);
+  }
+
+  function refreshModelsList(opts) {
+    opts = opts || {};
+    var silent = !!opts.silent;
+    var force = !!opts.force;
+    if (!panelEl) return;
+    var keyEl = panelEl.querySelector('#cxai-apikey');
+    var urlEl = panelEl.querySelector('#cxai-baseurl');
+    var apiKey = (keyEl ? keyEl.value : config.apiKey || '').trim();
+    var baseUrl = (urlEl ? urlEl.value : config.baseUrl || DEFAULT_CONFIG.baseUrl).trim() || DEFAULT_CONFIG.baseUrl;
+
+    if (!apiKey) {
+      if (!silent) toast('请先填写 API Key 再同步模型列表', 'warn');
+      return;
+    }
+
+    var sig = getModelCacheKey(apiKey, baseUrl);
+    var applyModels = function (models) {
+      availableModels = models;
+      _lastModelSyncSig = sig;
+      var selEl = panelEl ? panelEl.querySelector('#cxai-model') : null;
+      var curModel = selEl ? selEl.value : config.model;
+      renderModelOptions(curModel);
+    };
+
+    if (!force && K.MODEL_CACHE) {
+      storageGet([K.MODEL_CACHE], function (r) {
+        var cache = r[K.MODEL_CACHE];
+        var ttl = L.MODEL_CACHE_TTL || 21600000;
+        if (cache && cache.sig === sig && Array.isArray(cache.models) && cache.models.length > 0 && (Date.now() - (cache.time || 0) < ttl)) {
+          applyModels(cache.models);
+          return;
+        }
+        fetchLiveModels();
+      });
+    } else {
+      fetchLiveModels();
+    }
+
+    function fetchLiveModels() {
+      if (_isFetchingModels) return;
+      _isFetchingModels = true;
+      setModelsRefreshLoading(true);
+      runtimeSend({
+        type: 'DEEPSEEK_MODELS',
+        apiKey: apiKey,
+        baseUrl: baseUrl,
+      }, function (resp, err) {
+        _isFetchingModels = false;
+        setModelsRefreshLoading(false);
+        if (err || !resp || !resp.success || !Array.isArray(resp.data)) {
+          var errMsg = err ? normalizeRuntimeError(err) : (resp && resp.error ? resp.error : '未知错误');
+          if (!silent) {
+            log('⚠ 获取模型列表失败: ' + errMsg, 'warn');
+            toast('获取模型列表失败: ' + errMsg, 'warn');
+          }
+          return;
+        }
+        applyModels(resp.data);
+        if (K.MODEL_CACHE) {
+          var o = {};
+          o[K.MODEL_CACHE] = { sig: sig, models: resp.data, time: Date.now() };
+          storageSet(o);
+        }
+        if (!silent) {
+          var ids = resp.data.map(function (m) { return m.id; }).join(', ');
+          log('MODELS: 已同步 ' + resp.data.length + ' 个可用模型 → ' + ids, 'success');
+          toast('已同步 ' + resp.data.length + ' 个模型', 'success');
+        }
+      });
+    }
+  }
+
+  function scheduleModelRefresh(delayMs) {
+    clearTimeout(_modelSyncTimer);
+    _modelSyncTimer = setTimeout(function () {
+      refreshModelsList({ silent: true, force: false });
+    }, delayMs || 800);
+  }
+
   function saveConfig(silent) {
     config.apiKey = panelEl.querySelector('#cxai-apikey').value.trim();
     config.baseUrl = panelEl.querySelector('#cxai-baseurl').value.trim() || DEFAULT_CONFIG.baseUrl;
-    config.model = normalizeModelId(panelEl.querySelector('#cxai-model').value.trim() || DEFAULT_CONFIG.model);
+    config.model = normalizeModelId(panelEl.querySelector('#cxai-model').value.trim() || DEFAULT_CONFIG.model, config.baseUrl);
     var tmEl = panelEl.querySelector('#cxai-thinking-mode');
     config.thinkingMode = tmEl ? tmEl.value : 'none';
     config.rounds = parseInt(panelEl.querySelector('#cxai-rounds').value) || DEFAULT_CONFIG.rounds;
@@ -2547,6 +2721,9 @@
     var tipEl = panelEl.querySelector('#cxai-setup-tip');
     if (tipEl) tipEl.style.display = config.apiKey ? 'none' : 'flex';
     flashSavedBadge(silent ? '✓ 已自动保存' : '✓ 已保存');
+    if (config.apiKey && config.apiKey.length >= 6 && getModelCacheKey(config.apiKey, config.baseUrl) !== _lastModelSyncSig) {
+      scheduleModelRefresh(silent ? 800 : 120);
+    }
     if (!silent) {
       log('✓ 设置已保存 [' + activeProfile + ']', 'success');
       toast('设置已保存', 'success');
@@ -2564,9 +2741,9 @@
     const q = (s) => panelEl.querySelector(s);
     q('#cxai-apikey').value = config.apiKey;
     q('#cxai-baseurl').value = config.baseUrl;
-    q('#cxai-model').value = normalizeModelId(config.model);
-    var tmEl = q('#cxai-thinking-mode');
-    if (tmEl) tmEl.value = config.thinkingMode || 'none';
+    var resolvedModel = normalizeModelId(config.model, config.baseUrl);
+    renderModelOptions(resolvedModel);
+    renderThinkingModeOptions(resolvedModel, config.thinkingMode || 'none');
     q('#cxai-rounds').value = config.rounds;
     q('#cxai-delay').value = config.delay;
     q('#cxai-custom-prompt').value = config.customPrompt || '';
@@ -3322,7 +3499,7 @@
       + '</div><div id="cxai-profile-inline" class="cxai-profile-inline"></div></div>'
       + '<div class="cxai-field"><label>API Key</label><div class="cxai-input-with-eye"><input type="password" id="cxai-apikey" placeholder="sk-..." /><button type="button" class="cxai-eye-btn" id="cxai-eye-btn" title="显示/隐藏">' + cxIcon('eye', 14) + '</button></div></div>'
       + '<div class="cxai-row cxai-row-3">'
-      + '<div class="cxai-field"><label>模型</label><select id="cxai-model"><option value="deepseek-flash">deepseek-flash (V4.1)</option><option value="deepseek-v4-pro">deepseek-v4-pro (V4 Pro)</option></select></div>'
+      + '<div class="cxai-field"><label>模型</label><div class="cxai-model-row"><select id="cxai-model"><option value="deepseek-flash">deepseek-flash (DeepSeek-V4.1-Flash)</option><option value="deepseek-v4-pro">deepseek-v4-pro (DeepSeek-V4-Pro)</option></select><button type="button" class="cxai-icon-btn cxai-model-refresh" id="cxai-btn-refresh-models" title="从官方 /models 接口刷新模型列表">' + cxIcon('refresh', 13) + '</button></div></div>'
       + '<div class="cxai-field"><label>轮数</label><input type="number" id="cxai-rounds" min="1" max="20" value="5" /></div>'
       + '<div class="cxai-field"><label>间隔(s)</label><input type="number" id="cxai-delay" min="0" max="30" value="3" /></div>'
       + '</div>'
@@ -3455,11 +3632,26 @@
     // 设置按钮与自动保存
     panelEl.querySelector('#cxai-btn-save').addEventListener('click', function () { saveConfig(false); });
     panelEl.querySelector('#cxai-btn-test').addEventListener('click', testConnection);
+    var refreshModelsBtn = panelEl.querySelector('#cxai-btn-refresh-models');
+    if (refreshModelsBtn) {
+      refreshModelsBtn.addEventListener('click', function () {
+        saveConfig(true);
+        refreshModelsList({ silent: false, force: true });
+      });
+    }
     ['#cxai-apikey', '#cxai-baseurl', '#cxai-rounds', '#cxai-delay', '#cxai-custom-prompt', '#cxai-target-score'].forEach(function (sel) {
       var el = panelEl.querySelector(sel);
       if (el) el.addEventListener('input', scheduleAutoSave);
     });
-    ['#cxai-model', '#cxai-thinking-mode', '#cxai-prompt-style', '#cxai-discuss-length'].forEach(function (sel) {
+    var modelSel = panelEl.querySelector('#cxai-model');
+    if (modelSel) {
+      modelSel.addEventListener('change', function () {
+        var tmEl = panelEl.querySelector('#cxai-thinking-mode');
+        renderThinkingModeOptions(modelSel.value, tmEl ? tmEl.value : config.thinkingMode);
+        scheduleAutoSave();
+      });
+    }
+    ['#cxai-thinking-mode', '#cxai-prompt-style', '#cxai-discuss-length'].forEach(function (sel) {
       var el = panelEl.querySelector(sel);
       if (el) el.addEventListener('change', scheduleAutoSave);
     });
@@ -3681,6 +3873,9 @@
 
     fillConfigUI();
     loadTotalStats();
+    if (config.apiKey && config.apiKey.trim()) {
+      refreshModelsList({ silent: true, force: false });
+    }
 
     // 恢复面板位置/停靠侧/展开状态、批量选项，并在未配置 API Key 时自动引导
     storageGet([K.UI_STATE, K.BATCH_AUTO_AI], function (r) {

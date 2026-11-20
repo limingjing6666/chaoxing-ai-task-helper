@@ -306,8 +306,13 @@
 .cxai-row { display: flex; gap: 8px; }
 .cxai-row .cxai-field { flex: 1; min-width: 0; }
 .cxai-row-3 { display: flex; gap: 6px; }
-.cxai-row-3 .cxai-field:first-child { flex: 2.25; min-width: 0; }
-.cxai-row-3 .cxai-field:not(:first-child) { flex: 0.7; min-width: 0; }
+.cxai-row-3 .cxai-field:first-child { flex: 2.55; min-width: 0; }
+.cxai-row-3 .cxai-field:not(:first-child) { flex: 0.65; min-width: 0; }
+.cxai-model-row { display: flex; gap: 4px; align-items: stretch; }
+.cxai-model-row select { flex: 1; min-width: 0; }
+.cxai-icon-btn.cxai-model-refresh { width: 28px; color: #475569; }
+.cxai-icon-btn.cxai-model-refresh:hover { color: #2563eb; }
+.cxai-icon-btn.cxai-model-refresh.is-spinning svg { animation: cxai-spin 0.7s linear infinite; }
 
 /* 3选1 讨论字数分段胶囊 */
 .cxai-seg-group {

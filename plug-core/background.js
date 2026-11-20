@@ -15,6 +15,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'DEEPSEEK_MODELS') {
+    fetchModelsList(message.apiKey, message.baseUrl)
+      .then(models => sendResponse({ success: true, data: models }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   // 获取当前课程的AI实践任务列表
   if (message.type === 'FETCH_TASK_LIST') {
     fetchTaskList(message.courseId, message.cpi)
@@ -71,9 +78,19 @@ const MODEL_ALIASES = {
   'deepseek-reasoner': 'deepseek-v4-pro',
 };
 
-function normalizeModelId(model) {
+// 记录从官方 /models 接口实时拉取到的模型元数据（按 baseUrl 归档）
+const _liveModelRegistry = new Map();
+
+function cleanBaseKey(baseUrl) {
+  return String(baseUrl || 'https://api.deepseek.com').trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '').replace(/\/v1$/i, '');
+}
+
+function normalizeModelId(model, urlOrBase) {
   const raw = String(model || 'deepseek-flash').trim();
-  return MODEL_ALIASES[raw] || raw;
+  const baseMap = urlOrBase ? _liveModelRegistry.get(cleanBaseKey(urlOrBase)) : null;
+  if (baseMap && baseMap.has(raw)) return raw;
+  const isOfficialHost = !urlOrBase || /api\.deepseek\.com/i.test(String(urlOrBase));
+  return isOfficialHost ? (MODEL_ALIASES[raw] || raw) : raw;
 }
 
 function buildChatUrl(baseUrl) {
@@ -83,8 +100,86 @@ function buildChatUrl(baseUrl) {
   return `${b}/v1/chat/completions`;
 }
 
+function buildModelsUrls(baseUrl) {
+  const b = String(baseUrl || 'https://api.deepseek.com').trim().replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(b)) return [b.replace(/\/chat\/completions$/i, '/models')];
+  if (/\/v1$/i.test(b)) return [`${b}/models`];
+  // 官方文档为 GET https://api.deepseek.com/models，第三方 OpenAI 代理常见为 /v1/models
+  if (/deepseek\.com$/i.test(b)) return [`${b}/models`, `${b}/v1/models`];
+  return [`${b}/v1/models`, `${b}/models`];
+}
+
+async function fetchModelsList(apiKey, baseUrl) {
+  const urls = buildModelsUrls(baseUrl);
+  const headers = apiKey ? { 'Authorization': `Bearer ${String(apiKey).trim()}` } : {};
+  let lastErr = null;
+
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const resp = await fetch(url, { method: 'GET', headers, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!resp.ok) {
+        if (resp.status === 401 || resp.status === 403) {
+          throw new Error('API Key 无效或无权获取模型列表');
+        }
+        if ((resp.status === 404 || resp.status === 405) && i < urls.length - 1) {
+          continue;
+        }
+        const errText = await resp.text();
+        throw new Error(`模型列表接口 ${resp.status}: ${errText.substring(0, 160)}`);
+      }
+      const json = await resp.json();
+      const rawList = Array.isArray(json && json.data) ? json.data : (Array.isArray(json) ? json : []);
+      const seen = new Set();
+      const models = [];
+      const regMap = new Map();
+      for (const item of rawList) {
+        if (!item || !item.id) continue;
+        const id = String(item.id).trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const effortLevels = (item.effort && Array.isArray(item.effort.supported_levels))
+          ? item.effort.supported_levels.map(lv => String(lv).trim()).filter(Boolean)
+          : null;
+        const meta = {
+          id,
+          name: item.name ? String(item.name).trim() : '',
+          ownedBy: item.owned_by ? String(item.owned_by).trim() : '',
+          contextWindow: item.context_window != null ? Number(item.context_window) : null,
+          maxOutputTokens: item.max_output_tokens != null ? Number(item.max_output_tokens) : null,
+          effortLevels,
+          defaultEffort: (item.effort && item.effort.default_level) ? String(item.effort.default_level).trim() : '',
+        };
+        models.push(meta);
+        regMap.set(id, meta);
+      }
+      if (models.length === 0) {
+        throw new Error('模型列表接口未返回可用模型');
+      }
+      _liveModelRegistry.set(cleanBaseKey(baseUrl), regMap);
+      return models;
+    } catch (e) {
+      clearTimeout(timer);
+      if (e && e.name === 'AbortError') {
+        lastErr = new Error(`获取模型列表超时 (${url})`);
+      } else {
+        lastErr = e;
+      }
+      if (/API Key 无效/.test(lastErr.message) || i === urls.length - 1) {
+        throw lastErr;
+      }
+    }
+  }
+  throw lastErr || new Error('获取模型列表失败');
+}
+
 function buildChatPayload(model, messages, maxTokens, thinkingMode, url, includeThinking) {
-  const resolvedModel = normalizeModelId(model);
+  const resolvedModel = normalizeModelId(model, url);
+  const baseMap = _liveModelRegistry.get(cleanBaseKey(url));
+  const modelMeta = baseMap ? baseMap.get(resolvedModel) : null;
   const mode = String(thinkingMode || 'none').toLowerCase();
   const isThinking = mode !== 'none' && mode !== 'disabled';
   const isDeepSeek = /deepseek\.com/i.test(url) || /^deepseek-/i.test(resolvedModel);
@@ -100,13 +195,17 @@ function buildChatPayload(model, messages, maxTokens, thinkingMode, url, include
     payload.reasoning_effort = isThinking ? mode : 'none';
   }
 
+  let desiredMax = maxTokens || 1200;
   if (isThinking && isDeepSeek) {
     // 思考模式下 reasoning_content 与 content 共享 max_tokens，且 temperature 不生效
-    payload.max_tokens = Math.max(maxTokens || 1200, 8192);
+    desiredMax = Math.max(desiredMax, 8192);
   } else {
     payload.temperature = 0.75;
-    payload.max_tokens = maxTokens || 1200;
   }
+  if (modelMeta && modelMeta.maxOutputTokens > 0) {
+    desiredMax = Math.min(desiredMax, modelMeta.maxOutputTokens);
+  }
+  payload.max_tokens = desiredMax;
 
   return payload;
 }
@@ -275,7 +374,7 @@ async function testConnection(apiKey, baseUrl, model) {
     16,
     'none'
   );
-  const resolved = normalizeModelId(model);
+  const resolved = normalizeModelId(model, baseUrl);
   return `连接成功! 模型: ${resolved}${res.content ? '' : ' (响应正常)'}`;
 }
 

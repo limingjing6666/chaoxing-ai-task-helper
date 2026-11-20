@@ -37,6 +37,7 @@
     BATCH_TASKS: 'cxai_batch_tasks',
     BATCH_FAILED: 'cxai_batch_failed',   // 批量中失败的 url 列表
     SCAN_CACHE: 'cxai_scan_cache',       // 扫描结果缓存 { url, courseKey, tasks, time }
+    MODEL_CACHE: 'cxai_model_cache',     // 官方 /models 接口返回缓存 { sig, models, time }
     STATS: 'cxai_stats',                 // token 使用统计
     UI_STATE: 'cxai_ui_state',           // 面板展开状态与拖拽位置
     BATCH_AUTO_AI: 'cxai_batch_auto_ai', // 批量执行时 AI 实践页自动开始开关
@@ -47,7 +48,14 @@
     MAX_HISTORY: 50,
     MAX_RETRY_ATTEMPTS: 10,
     SCAN_CACHE_TTL: 3600000, // 1小时
+    MODEL_CACHE_TTL: 21600000, // 6小时
   };
+
+  // 无网/未填 Key 时的兜底默认模型清单
+  var DEFAULT_MODELS = [
+    { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', effortLevels: ['low', 'high', 'max'] },
+    { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', effortLevels: ['low', 'high', 'max'] },
+  ];
 
   // DeepSeek 模型定价 (元/1M token, 官方 2026-11 阶梯定价; 空闲时段为高峰价的 50%)
   // 高峰时段(北京时间): 周一至周五 09:00-12:00, 14:00-18:00
@@ -70,5 +78,6 @@
     LIMITS: LIMITS,
     PRICING: PRICING,
     MODEL_ALIASES: MODEL_ALIASES,
+    DEFAULT_MODELS: DEFAULT_MODELS,
   };
 })();
