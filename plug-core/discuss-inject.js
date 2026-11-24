@@ -3,8 +3,18 @@
 (function () {
   'use strict';
 
+  function htmlToPlainText(html) {
+    if (!html) return '';
+    try {
+      var doc = new DOMParser().parseFromString(String(html), 'text/html');
+      return (doc && doc.body ? doc.body.textContent : '') || '';
+    } catch (e) {
+      return String(html).replace(/<[^>]*>/g, '');
+    }
+  }
+
   window.addEventListener('message', function (e) {
-    if (!e.data || e.data.source !== 'cxai-content') return;
+    if (e.source !== window || !e.data || e.data.source !== 'cxai-content') return;
     var action = e.data.action;
     var id = e.data.id;
 
@@ -29,9 +39,7 @@
           topicTitle = topic.title || '';
           // rtf_content 里可能有更完整的纯文本
           if (!topicContent && topic.rtf_content) {
-            var tmp = document.createElement('div');
-            tmp.innerHTML = topic.rtf_content;
-            topicContent = tmp.textContent.trim();
+            topicContent = htmlToPlainText(topic.rtf_content).trim();
           }
         }
 
@@ -101,7 +109,16 @@
         var qlEditor = document.querySelector('.ql-editor');
 
         if (qlEditor) {
-          qlEditor.innerHTML = '<p>' + replyText.replace(/\n/g, '</p><p>') + '</p>';
+          var frag = document.createDocumentFragment();
+          var lines = String(replyText).split('\n');
+          for (var li = 0; li < lines.length; li++) {
+            var p = document.createElement('p');
+            if (lines[li]) p.textContent = lines[li];
+            else p.appendChild(document.createElement('br'));
+            frag.appendChild(p);
+          }
+          qlEditor.textContent = '';
+          qlEditor.appendChild(frag);
           qlEditor.dispatchEvent(new Event('input', { bubbles: true }));
         } else if (textarea) {
           // 先聚焦让编辑器激活，再用原生 setter 设值

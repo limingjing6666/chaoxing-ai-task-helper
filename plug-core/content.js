@@ -16,7 +16,8 @@
     RETRY_DELAY: 3000, EMPTY_REPLY_RETRY: 3000, SUBMIT_WAIT: 3000, RUN_RETRY_AUTO_DELAY: 4000,
     FILE_PARSE: 60000
   };
-  var L = _CONST.LIMITS || { MAX_HISTORY: 50, MAX_RETRY_ATTEMPTS: 10, SCAN_CACHE_TTL: 3600000, MODEL_CACHE_TTL: 21600000 };
+  var L = _CONST.LIMITS || { MAX_HISTORY: 50, MAX_RETRY_ATTEMPTS: 10, SCAN_CACHE_TTL: 3600000, SCAN_CACHE_VERSION: 2, MODEL_CACHE_TTL: 21600000 };
+  var SCAN_CACHE_VERSION = L.SCAN_CACHE_VERSION || 2;
   var PRICING = _CONST.PRICING || {
     'deepseek-flash':  { cacheHit: 0.04, cacheMiss: 2.0, output: 8.0 },
     'deepseek-v4-pro': { cacheHit: 0.30, cacheMiss: 9.0, output: 27.0 }
@@ -363,7 +364,7 @@
   const _pageCallbacks = {};
 
   window.addEventListener('message', (e) => {
-    if (e.data && e.data.source === 'cxai-page') {
+    if (e.source === window && e.data && e.data.source === 'cxai-page') {
       const cb = _pageCallbacks[e.data.id];
       if (cb) {
         delete _pageCallbacks[e.data.id];
@@ -1132,14 +1133,14 @@
           log('✓ 延迟获取到回复', 'success');
         } else {
           log('⚠ 老师回复仍为空，跳过本轮', 'warn');
-          messages = result.messages;
+          messages = result.messages || messages;
           setProgress(pct);
           continue;
         }
       }
 
       log('RECV: 老师 → ' + truncate(result.response, 80), 'chat-teacher');
-      messages = result.messages;
+      messages = result.messages || messages;
       setProgress(pct);
 
       // 收尾语检测：老师表示讲完/掌握则本轮后提前结束（config.rounds 仍作兜底上限）
@@ -2473,14 +2474,22 @@
     return storageSet(o);
   }
 
-  function switchProfile(name) {
-    if (!profiles[name]) return;
-    activeProfile = name;
-    config = { ...DEFAULT_CONFIG, ...profiles[name] };
+  function applyActiveProfileState() {
+    if (!config.apiKey) {
+      availableModels = DEFAULT_MODELS.slice();
+      _lastModelSyncSig = '';
+    }
     persistProfiles();
     fillConfigUI();
     renderProfileList();
     refreshModelsList({ silent: true, force: false });
+  }
+
+  function switchProfile(name) {
+    if (!profiles[name]) return;
+    activeProfile = name;
+    config = { ...DEFAULT_CONFIG, ...profiles[name] };
+    applyActiveProfileState();
     toast('已切换到: ' + name, 'info');
   }
 
@@ -2491,9 +2500,7 @@
     profiles[name] = { ...DEFAULT_CONFIG };
     activeProfile = name;
     config = { ...profiles[name] };
-    persistProfiles();
-    fillConfigUI();
-    renderProfileList();
+    applyActiveProfileState();
     toast('已创建: ' + name, 'success');
   }
 
@@ -2507,10 +2514,11 @@
     if (activeProfile === name) {
       activeProfile = Object.keys(profiles)[0];
       config = { ...DEFAULT_CONFIG, ...profiles[activeProfile] };
-      fillConfigUI();
+      applyActiveProfileState();
+    } else {
+      persistProfiles();
+      renderProfileList();
     }
-    persistProfiles();
-    renderProfileList();
     toast('已删除: ' + name, 'info');
   }
 
@@ -2626,6 +2634,10 @@
     var baseUrl = (urlEl ? urlEl.value : config.baseUrl || DEFAULT_CONFIG.baseUrl).trim() || DEFAULT_CONFIG.baseUrl;
 
     if (!apiKey) {
+      availableModels = DEFAULT_MODELS.slice();
+      _lastModelSyncSig = '';
+      var selEmpty = panelEl.querySelector('#cxai-model');
+      renderModelOptions(selEmpty ? selEmpty.value : config.model);
       if (!silent) toast('请先填写 API Key 再同步模型列表', 'warn');
       return;
     }
@@ -3014,9 +3026,10 @@
         }
       });
 
-      // 存入扫描缓存（按课程标识匹配 + 时间戳，1小时内恢复）
+      // 存入扫描缓存（按版本号 + 课程标识匹配 + 时间戳，1小时内恢复）
       var cache = {};
       cache[K.SCAN_CACHE] = {
+        version: SCAN_CACHE_VERSION,
         url: location.href,
         courseKey: normalizeScanCacheKey(location.href),
         tasks: collectedTasks,
@@ -3056,7 +3069,7 @@
     storageGet([K.SCAN_CACHE], function (r) {
       if (isCollecting || collectedTasks.length > 0) return;
       var cache = r[K.SCAN_CACHE];
-      if (!cache || !cache.tasks || cache.tasks.length === 0) return;
+      if (!cache || cache.version !== SCAN_CACHE_VERSION || !cache.tasks || cache.tasks.length === 0) return;
       if (Date.now() - (cache.time || 0) > L.SCAN_CACHE_TTL) return;
       var curKey = normalizeScanCacheKey(location.href);
       if (cache.courseKey ? (cache.courseKey !== curKey) : (cache.url !== location.href)) return;
@@ -3934,6 +3947,7 @@
     });
   }
 
+  var _discussInfoRetries = 0;
   function loadDiscussInfo() {
     pageCall('getDiscussState').then(function (st) {
       if (!taskInfoEl) return;
@@ -3948,9 +3962,10 @@
         + '<div class="cxai-task-stat"><span>回复状态</span><span class="cxai-stat-val">' + (st.canReply ? '可回复' : '已锁定') + '</span></div>'
         + '</div>';
     }).catch(function () {
-      setTimeout(function () {
-        loadDiscussInfo();
-      }, 5000);
+      if (_discussInfoRetries < 5) {
+        _discussInfoRetries++;
+        setTimeout(loadDiscussInfo, 5000);
+      }
     });
   }
 

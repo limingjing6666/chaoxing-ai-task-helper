@@ -48,6 +48,7 @@
     MAX_HISTORY: 50,
     MAX_RETRY_ATTEMPTS: 10,
     SCAN_CACHE_TTL: 3600000, // 1小时
+    SCAN_CACHE_VERSION: 2,
     MODEL_CACHE_TTL: 21600000, // 6小时
   };
 
@@ -71,8 +72,9 @@
     'deepseek-reasoner': 'deepseek-v4-pro',
   };
 
-  // 导出到 window（content script 隔离 world 内共享）
-  window.CXAI_CONST = {
+  // 导出到 window / Service Worker globalThis 共享
+  var _ROOT = typeof window !== 'undefined' ? window : globalThis;
+  _ROOT.CXAI_CONST = {
     TIMEOUTS: TIMEOUTS,
     STORAGE_KEYS: STORAGE_KEYS,
     LIMITS: LIMITS,

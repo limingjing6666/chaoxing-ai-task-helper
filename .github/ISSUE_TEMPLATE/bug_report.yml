@@ -1,0 +1,60 @@
+name: 问题反馈 (Bug Report)
+description: 插件报错、卡住、无法识别按钮或扫描异常时，请按此模板反馈
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请**切勿**粘贴自己的 `sk-` DeepSeek API Key 或带个人 `enc=` / `cpi=` 参数的完整私密链接。
+  - type: dropdown
+    id: browser
+    attributes:
+      label: 使用的浏览器
+      options:
+        - Microsoft Edge
+        - Google Chrome
+        - 其他 Chromium 内核浏览器
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 扩展版本号
+      placeholder: "例如：v1.4.1（在浏览器扩展管理页查看）"
+    validations:
+      required: true
+  - type: dropdown
+    id: page_type
+    attributes:
+      label: 出错页面类型
+      options:
+        - 新版课程任务中心 (fanyav3/studentCourse)
+        - 新版 AI 实践 (situationalDialogue)
+        - 旧版 AI 实践 / 文档 / 代码 / 阶梯 (ai-evaluate)
+        - 主题讨论 (groupweb / stuTopicDetail)
+        - 其他页面
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 现象描述
+      description: 说明你点击了哪个按钮，预期发生什么，实际发生了什么
+      placeholder: "例如：在任务中心点击「扫描任务」后一直提示…"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 面板「运行日志」内容（可选，如有请脱敏粘贴）
+      placeholder: "[12:00:00] SCAN: ..."
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前自查
+      options:
+        - label: 我已确认加载的是仓库内的 `plug-core` 文件夹，且更新代码后已在扩展页点过重新加载并刷新超星网页
+          required: true
+        - label: 我已确认提交内容不包含 `sk-` 密钥或个人隐私信息
+          required: true

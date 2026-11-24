@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "超星AI助手",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "超星学习通 AI 实践与主题讨论自动完成助手，支持批量执行、自动重试与评估反馈驱动优化",
   "permissions": ["storage", "tabs"],
   "host_permissions": [

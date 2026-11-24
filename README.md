@@ -1,9 +1,11 @@
 # 超星 AI 助手
 
-> 面向 **Chrome / Edge** 浏览器的超星学习通自动化辅助扩展（v1.4.0）。支持 **AI 实践**（情景对话 / 文档作品 / 代码实践 / AI 思维阶梯）、**主题讨论** 自动作答、**整门课批量扫描调度**，以及按评估反馈 **自动重试冲分**。
+> 面向 **Chrome / Edge** 浏览器的超星学习通自动化辅助扩展（v1.4.1）。支持 **AI 实践**（情景对话 / 文档作品 / 代码实践 / AI 思维阶梯）、**主题讨论** 自动作答、**整门课批量扫描调度**，以及按评估反馈 **自动重试冲分**。
+
+![超星 AI 助手实操演示](docs/images/demo-walkthrough.gif)
 
 > [!IMPORTANT]
-> **安装前必看**：从 GitHub 下载解压或 `git clone` 后，浏览器加载扩展程序时**必须选择仓库内的 `plug-core` 文件夹**，不要直接选择外层仓库根目录（否则会提示找不到 `manifest.json`）。
+> **安装前必看**：下载扩展压缩包解压或 `git clone` 后，浏览器加载扩展程序时**必须选择解压目录内的 `plug-core` 文件夹**，不要直接选择外层目录（否则会提示找不到 `manifest.json`）。
 
 ---
 
@@ -25,9 +27,10 @@
 
 ### 第 1 步：下载代码并安装扩展（Chrome / Edge 通用）
 
-1. **获取扩展文件**（二选一）：
-   - **不会用 Git 的同学**：点击本仓库右上角绿色 **`Code`** 按钮 → **`Download ZIP`**，下载后**右键解压到桌面或固定文件夹**（注意不要删掉解压后的文件夹，也不要在未解压的压缩包里直接选目录）。
-   - **会用 Git**：执行 `git clone https://github.com/limingjing6666/chaoxing-ai-task-helper.git`
+1. **获取扩展文件**（三选一，新手推荐方式 A）：
+   - **方式 A（推荐，免 Git / 最省心）**：前往 [GitHub Releases 最新版页面](https://github.com/limingjing6666/chaoxing-ai-task-helper/releases/latest) 下载 `chaoxing-ai-helper-v1.4.1.zip`，**右键解压到一个固定文件夹**（注意不要删掉解压后的文件夹，也不要直接拖未解压的 `.zip`）。
+   - **方式 B（下载源码包）**：点击本仓库右上角绿色 **`Code`** 按钮 → **`Download ZIP`**，同样右键解压到固定目录。
+   - **方式 C（会用 Git）**：执行 `git clone https://github.com/limingjing6666/chaoxing-ai-task-helper.git`
 2. **打开浏览器的扩展管理页**：
    - **Edge 浏览器**：地址栏输入 `edge://extensions/` 回车
    - **Chrome 浏览器**：地址栏输入 `chrome://extensions/` 回车

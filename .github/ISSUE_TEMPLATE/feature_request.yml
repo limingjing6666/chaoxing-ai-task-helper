@@ -1,0 +1,19 @@
+name: 新题型 / 新版页面适配建议
+description: 如果超星推出了插件暂未支持的新活动或新版界面，欢迎在这里提供特征
+title: "[适配]: "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: url_path
+    attributes:
+      label: 页面路径前缀（请去掉个人 courseId / enc 参数）
+      placeholder: "例如：https://mooc2-ans.chaoxing.com/mooc2-ans-vue/xxx"
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: 页面交互与任务类型说明
+      placeholder: "说明该任务需要什么操作（对话 / 上传文件 / 表单选择等），最好附上打码后的页面截图。"
+    validations:
+      required: true

@@ -473,7 +473,7 @@
   }
 
   window.addEventListener('message', function (e) {
-    if (!e.data || e.data.source !== 'cxai-content') return;
+    if (e.source !== window || !e.data || e.data.source !== 'cxai-content') return;
     var action = e.data.action;
     var id = e.data.id;
 

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 新手安装与使用图文教程
+    url: https://github.com/limingjing6666/chaoxing-ai-task-helper#readme
+    about: 首次使用建议先按 README 图文步骤操作，大部分加载或连接问题都能在「常见问题排查」找到解法

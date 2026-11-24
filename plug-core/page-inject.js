@@ -448,10 +448,20 @@
     el.dispatchEvent(new KeyboardEvent('input', { bubbles: true }));
   }
 
+  function htmlToPlainText(html) {
+    if (!html) return '';
+    try {
+      var doc = new DOMParser().parseFromString(String(html), 'text/html');
+      return (doc && doc.body ? doc.body.textContent : '') || '';
+    } catch (e) {
+      return String(html).replace(/<[^>]*>/g, '');
+    }
+  }
+
   // ==================== 消息处理 ====================
 
   window.addEventListener('message', function (e) {
-    if (!e.data || e.data.source !== 'cxai-content') return;
+    if (e.source !== window || !e.data || e.data.source !== 'cxai-content') return;
     var action = e.data.action;
     var id = e.data.id;
 
@@ -578,12 +588,7 @@
 
         // Add code-specific fields for type 4
         if (c.type === 4) {
-          var contentText = '';
-          if (c.content || c.requirementContent) {
-            var tmp = document.createElement('div');
-            tmp.innerHTML = c.content || c.requirementContent || '';
-            contentText = tmp.textContent.trim();
-          }
+          var contentText = htmlToPlainText(c.content || c.requirementContent || '').trim();
           stateData.requirement = contentText || c.requirement || '';
           stateData.codeUuid = c.codeUuid || '';
           stateData.langList = app.langList || {};
@@ -1384,12 +1389,7 @@
     else if (action === 'getCodeState') {
       try {
         var c = app.current || {};
-        var content = '';
-        if (c.content || c.requirementContent) {
-          var tmp = document.createElement('div');
-          tmp.innerHTML = c.content || c.requirementContent || '';
-          content = tmp.textContent.trim();
-        }
+        var content = htmlToPlainText(c.content || c.requirementContent || '').trim();
 
         reply({
           title: c.title || '',

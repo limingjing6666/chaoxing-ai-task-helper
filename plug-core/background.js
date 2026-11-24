@@ -1,4 +1,7 @@
 // Service Worker - 处理DeepSeek API调用（避免内容脚本的CORS限制）
+importScripts('cxai-constants.js');
+const _CXAI_CONST = globalThis.CXAI_CONST || {};
+const _CXAI_TIMEOUTS = _CXAI_CONST.TIMEOUTS || {};
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'DEEPSEEK_CHAT') {
@@ -72,7 +75,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-const MODEL_ALIASES = {
+const MODEL_ALIASES = _CXAI_CONST.MODEL_ALIASES || {
   'deepseek-v4-flash': 'deepseek-flash',
   'deepseek-chat': 'deepseek-flash',
   'deepseek-reasoner': 'deepseek-v4-pro',
@@ -212,9 +215,12 @@ function buildChatPayload(model, messages, maxTokens, thinkingMode, url, include
 
 async function callDeepSeek(apiKey, baseUrl, model, messages, maxTokens, thinkingMode) {
   const url = buildChatUrl(baseUrl);
+  const timeoutMs = _CXAI_TIMEOUTS.DEEPSEEK_CHAT || _CXAI_TIMEOUTS.PAGE_CALL || 120000;
 
   async function sendRequest(includeThinking) {
     const payload = buildChatPayload(model, messages, maxTokens, thinkingMode, url, includeThinking);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     let resp;
     try {
       resp = await fetch(url, {
@@ -224,10 +230,16 @@ async function callDeepSeek(apiKey, baseUrl, model, messages, maxTokens, thinkin
           'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify(payload),
+        signal: ctrl.signal,
       });
     } catch (e) {
+      clearTimeout(timer);
+      if (e && e.name === 'AbortError') {
+        throw new Error(`DeepSeek 请求超时 (${Math.round(timeoutMs / 1000)}s)，请检查网络或关闭思考模式`);
+      }
       throw new Error(`网络连接失败 (${url}): ${e.message}。请检查网络或Base URL是否正确`);
     }
+    clearTimeout(timer);
     return resp;
   }
 
